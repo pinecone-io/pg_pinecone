@@ -1,0 +1,201 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      # Workspace-wide clippy needs a pgrx environment ($PGRX_HOME) to compile
+      # the extension crate; it runs in the pgrx-tests job. Only the pure-Rust
+      # client is linted here.
+      - run: cargo clippy -p pg_pinecone-client --all-targets -- -D warnings
+
+      - name: Cache cargo-audit
+        id: cargo-audit-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2-${{ runner.os }}
+
+      - name: Install cargo-audit
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      # serde_cbor 0.11.2 (RUSTSEC-2021-0127, unmaintained, no fix) comes in through pgrx: its warning
+      # is muted, any other is printed. Only a vulnerability fails the job.
+      - run: cargo audit --ignore RUSTSEC-2021-0127
+
+  client-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p pg_pinecone-client
+
+  pgrx-tests:
+    name: pgrx-tests-pg${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [17, 18]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -o -m1 avx512vpopcntdq /proc/cpuinfo || echo 'no avx512vpopcntdq'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # One cache per Postgres major: pgrx-pg-sys builds differently on each.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pg${{ matrix.pg }}
+
+      - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+          PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          echo "PG_CONFIG=$PG_CONFIG" >> "$GITHUB_ENV"
+          # cargo pgrx test installs the extension into the system Postgres dirs
+          sudo chmod a+rwx "$($PG_CONFIG --pkglibdir)" "$($PG_CONFIG --sharedir)/extension"
+
+      - name: Install pgvector
+        run: sudo ./scripts/install-pgvector.sh "$PG_CONFIG"
+
+      - name: Cache cargo-pgrx
+        id: cargo-pgrx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-pgrx
+          key: cargo-pgrx-0.19.2-${{ runner.os }}
+
+      - name: Install cargo-pgrx
+        if: steps.cargo-pgrx-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-pgrx --version 0.19.2 --locked
+
+      - name: cargo pgrx init
+        run: cargo pgrx init --pg${{ matrix.pg }} "$PG_CONFIG"
+
+      # Workspace clippy lives here because the extension crate needs $PGRX_HOME.
+      # The pg_test run also covers mock_backend.rs, smoke.rs, and the test module.
+      # Exactly one pgNN feature per build, so the default (pg17) is switched off.
+      - run: cargo clippy --workspace --all-targets --no-default-features --features pg_pinecone/pg${{ matrix.pg }} -- -D warnings
+      - run: cargo clippy --workspace --all-targets --no-default-features --features pg_pinecone/pg${{ matrix.pg }},pg_pinecone/pg_test -- -D warnings
+
+      - name: cargo pgrx test
+        working-directory: pg_pinecone
+        run: cargo pgrx test pg${{ matrix.pg }} --profile ci-test
+
+  # Proves `ALTER EXTENSION pg_pinecone UPDATE` from the latest release (install, restart, update) lands on a
+  # catalog identical to a fresh install and keeps the lanes working (scripts/upgrade-drill.sh,
+  # docs/contributing.md).
+  upgrade-test:
+    name: upgrade-test-pg${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [17, 18]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the upgrade base
+        run: |
+          UPGRADE_BASES="$(scripts/upgrade/pick-base.py derive)"
+          for base in $UPGRADE_BASES; do scripts/upgrade/pick-base.py check "$base"; done
+          [ -n "$UPGRADE_BASES" ] || echo "no pg_pinecone release below this version yet: nothing to upgrade from, the drill is skipped"
+          echo "UPGRADE_BASES=$UPGRADE_BASES" >> "$GITHUB_ENV"
+
+      - name: Tool tests
+        run: python3 -m unittest discover -s scripts/upgrade/tests -v
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.UPGRADE_BASES != ''
+      - uses: Swatinem/rust-cache@v2
+        if: env.UPGRADE_BASES != ''
+        with:
+          key: pg${{ matrix.pg }}
+          cache-on-failure: true
+
+      - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
+        if: env.UPGRADE_BASES != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+          PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          echo "PG_CONFIG=$PG_CONFIG" >> "$GITHUB_ENV"
+          # the drill installs both versions' files without sudo
+          sudo chmod a+rwx "$($PG_CONFIG --pkglibdir)" "$($PG_CONFIG --sharedir)/extension"
+
+      - name: Install pgvector
+        if: env.UPGRADE_BASES != ''
+        run: sudo ./scripts/install-pgvector.sh "$PG_CONFIG"
+
+      - name: Cache cargo-pgrx
+        if: env.UPGRADE_BASES != ''
+        id: cargo-pgrx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-pgrx
+          key: cargo-pgrx-0.19.2-${{ runner.os }}
+
+      - name: Install cargo-pgrx
+        if: env.UPGRADE_BASES != '' && steps.cargo-pgrx-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-pgrx --version 0.19.2 --locked
+
+      - name: cargo pgrx init
+        if: env.UPGRADE_BASES != ''
+        run: cargo pgrx init --pg${{ matrix.pg }} "$PG_CONFIG"
+
+      - name: Cache release tarballs
+        if: env.UPGRADE_BASES != ''
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pg_pinecone-upgrade-base
+          key: upgrade-base-${{ env.UPGRADE_BASES }}-pg${{ matrix.pg }}-${{ runner.os }}
+
+      - name: Upgrade drills
+        if: env.UPGRADE_BASES != ''
+        run: |
+          for base in $UPGRADE_BASES; do
+            ./scripts/upgrade-drill.sh "$base" "$PG_CONFIG"
+          done
+
+      - name: Keep the drill's logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-drill-pg${{ matrix.pg }}
+          path: |
+            /tmp/pg_pinecone-upgrade-drill.*
+            !/tmp/pg_pinecone-upgrade-drill.*/data
+            !/tmp/pg_pinecone-upgrade-drill.*/head-package
+            !/tmp/pg_pinecone-upgrade-drill.*/stage

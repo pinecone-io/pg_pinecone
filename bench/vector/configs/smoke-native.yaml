@@ -1,0 +1,83 @@
+# Port smoke (pg_pinecone 0.8+): pgvector hnsw vs pg_pinecone_native, 50k x 768d.
+# Same dataset parameters as configs/smoke.yaml and smoke_pg_pinecone_native.yaml
+# (same cached synthetic corpus), so the 2026-09 numbers are a
+# regression reference (hnsw 0.636 / 0.836 @ ef 10 / 40; pg_pinecone unfiltered 0.812 / 0.879 / 0.930 @ rm 4 / 10 / 20).
+# Proves load, build, EXPLAIN-gated query, scan-mode assertion and tie-aware
+# recall end to end, including one residual cell (a second column the index
+# cannot push). Not a result worth reporting.
+# Run (from bench/vector): PG_PINECONE_BENCH_PG=<install prefix> .venv/bin/python run.py \
+#        --config configs/smoke-native.yaml --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-smoke" -v
+# (`--allow-dirty` only if the git tree is not clean; see README.md.)
+name: smoke_native
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    # residual: filt_uncorrelated_0100_eq stays an executor Filter (the index key is the 1% column)
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.10, mode: uncorrelated}}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 40]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  # Unfiltered build: plain IVF path (mode H; n > small_n_threshold, so not the flat bootstrap).
+  - name: pg_pinecone_native_unfilt
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, small_n_threshold: 1000, rescore_multiplier: 10}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10, 20]
+
+  # Filtered build on the 1% correlated column; mode_l_threshold 0.005 < realized ~0.011
+  # keeps the scan in mode H (IVF + in-loop key filtering), the mode the residual cases use.
+  - name: pg_pinecone_native_filt
+    type: pg_pinecone_native
+    build_params:
+      seed: 42
+      k_bits: 512
+      small_n_threshold: 1000
+      rescore_multiplier: 10
+      mode_l_threshold: 0.005
+      filter_column: filt_correlated_0010_eq
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10, 20]
+
+# smaller than pg/tuned.conf: shared machine, 50k rows, keeps scratch disk small
+postgres:
+  shared_buffers: 2GB
+  maintenance_work_mem: 1GB
+  min_wal_size: 256MB
+  max_wal_size: 1GB
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

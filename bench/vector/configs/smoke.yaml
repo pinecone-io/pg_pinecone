@@ -1,0 +1,101 @@
+# Smoke-scale config: proves the harness end-to-end in minutes, not hours.
+# See configs/full.yaml for the 1M-scale config this is expected to extrapolate to.
+name: smoke
+seed: 42
+k: 10                 # recall@k for every workload (churn included)
+warmup_queries: 10    # per-connection untimed warmup before measured queries
+hardness_recall_threshold: 0.97   # reported == enforced
+# Duration-based throughput-pass floor per sweep point: a fixed 500-query measured set split 8 ways can finish in
+# tens of milliseconds at a cheap sweep point -- far too short a window for
+# qps_wall to mean anything (scheduler jitter dominates). Reduced from the
+# suggested >=5s to keep this config runnable in minutes -- still
+# ~30x the noise floor being fixed. full.yaml uses the full 5s.
+min_throughput_seconds: 1.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  # Sigma=0.3 (the old value) was too easy -- in 768d,
+  # independent per-point noise is nearly orthogonal to the direction toward
+  # any other center (curse of dimensionality), so "nearest center" impurity
+  # stays ~0 even at large sigma; the real difficulty lever is local density,
+  # not literal cluster overlap. Calibrated empirically against this exact
+  # pgvector build (bench/vector/.venv; calibration notes in the
+  # README): cluster_sigma=1.1 + a 3-way per-cluster scale mix (some
+  # clusters tighter/looser than others, like real topic/product embeddings)
+  # + a 2% uniform background fraction (unclustered noise rows, also real)
+  # lands hnsw ef_search=40 (mid-sweep) at recall ~0.87 and ef_search=10
+  # (cheapest) at ~0.65 -- well under the 0.97 hardness-check ceiling, with
+  # room to see the knob actually matter. ivfflat lands similarly (probes=4
+  # ~0.87, probes=1 ~0.62). See dataset.geometry + hardness_check in every
+  # run's results JSON for this run's actual verified numbers, not this
+  # comment's.
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  # Full selectivity/mode matrix this knob supports (see configs/full.yaml for
+  # the complete sweep). Smoke only *runs* the hard case: 1% correlated.
+  # mode=correlated automatically also runs an in-region ("tenant-style")
+  # query workload alongside the default global/out-of-region one -- see
+  # harness/runner.py's query_modes.
+  selectivities: [0.001, 0.01, 0.10, 0.50]
+  modes: [correlated, uncorrelated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    # m/ef_construction pinned to pgvector docs' recommended defaults.
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160]
+    iterative_scan_values: [null]                       # unfiltered: GUC default (off)
+    filtered_iterative_scan_values: ["off", "relaxed_order"] # filtered: on vs off, as separate configs
+    # The "0.855 plateau" bug: hnsw.max_scan_tuples
+    # defaults to 20000 -- comparable to this run's 50000-row table, so it can
+    # silently cap what a filtered relaxed_order scan ever finds, independent
+    # of ef_search. Swept alongside ef_search (only engaged when iterative_scan
+    # is on): the pgvector-docs default, and "auto" = max(100000, 10% of rows)
+    # (see harness/systems.py:System.scan_budgets_for).
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [20000, auto]
+  - name: pgvector_ivfflat
+    type: ivfflat
+    # lists: null => harness applies the pgvector docs heuristic (rows/1000 <= 1M rows).
+    build_params: {lists: null}
+    sweep_param: probes
+    sweep_values: [1, 2, 4, 8, 16]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: true
+  cycles: 3
+  reembed_pct: 0.05
+  delete_reinsert_pct: 0.05
+  vacuum_after_each_cycle: true
+  # system/sweep_value default to the first `systems` entry and its
+  # middle sweep value if omitted; pinned explicitly here for reproducibility.
+  system: {name: pgvector_hnsw, type: hnsw, build_params: {m: 16, ef_construction: 64},
+           sweep_param: ef_search, sweep_values: [40]}
+  sweep_value: 40
+
+sift1m:
+  enabled: true
+  sift_n_queries: 500
+  sift_systems:
+    - name: pgvector_hnsw
+      type: hnsw
+      build_params: {m: 16, ef_construction: 64}
+      sweep_param: ef_search
+      sweep_values: [10, 20, 40, 80, 160]

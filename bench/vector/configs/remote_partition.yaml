@@ -1,0 +1,65 @@
+# One namespace per tenant: a synthetic tenant_id column (100 tenants, each a group of 10 of the 1,000 k-means clusters, so a tenant's
+# rows are one topical region) on the first 500,000 wiki_dpr vectors, pinecone.create_index(engine => 'remote', partition_column =>
+# 'tenant_id'): namespace public.<table>:<tenant>, queried with WHERE tenant_id = $t (a query without it is refused).
+# 500,000 rows keep the write units inside the budget (about 1.6M); the namespaces hold about 5,000 vectors each (15 MB).
+# Queries: 20 held-out vectors from each tenant's own region (2,000, shuffled so concurrent clients meet different tenants), exact
+# top-k among the tenant's rows only. Reports the backfill (requests are estimated from the chunking rule: one request per tenant per
+# 5,000-row window), per-tenant latency (median of the tenants' p50) and the rejected share at 1, 4 and 16 clients.
+# Two stages, as remote_1m.yaml: --stage build, then --stage measure (deletes the index).
+name: remote_partition
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+table: pg_pinecone_bench_vec_part
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 2000
+  log_min_error_statement: panic
+  shared_buffers: 4GB
+  maintenance_work_mem: 1GB
+
+remote:
+  rest_seconds: 20
+  delete_index_after: true
+
+partition:
+  column: tenant_id
+  n_tenants: 100
+  queries_per_tenant: 20
+  k_values: [10]
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 500000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pg_pinecone_remote
+    type: pg_pinecone_remote
+    skip_unfiltered: true
+    build_params: {partition_column: tenant_id}
+    sweep_param: am_min_topk
+    sweep_values: [50]
+    record_scan_stats: true
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

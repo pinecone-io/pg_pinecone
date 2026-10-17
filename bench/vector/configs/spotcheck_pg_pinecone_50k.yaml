@@ -1,0 +1,52 @@
+# Before/after spot-check for the engine's scan perf fix (rd_amcache
+# directory cache + alloc-free rescore) at 50k. Directly comparable to
+# results/sweep_pg_pinecone_50k_20260912T041826Z (same dataset cache, same seeds):
+# pnat_k1024's rm={4,8,20} points there measured 12.36/23.33/56.17 ms p50
+# pre-fix; the filtered system's mode-L/H p50s compare against
+# pnat_boundary_1pct (~14.3-15.9 ms). rm={1,2} extend the frontier into the
+# low-pool region the record runs need.
+name: spotcheck_pg_pinecone_50k
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+
+systems:
+  - name: pnat_k1024
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, small_n_threshold: 1000}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 20]
+  - name: pnat_k1024_filt
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, small_n_threshold: 1000,
+                   filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

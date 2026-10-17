@@ -1,0 +1,55 @@
+# Lane comparison at wiki_dpr 100k x 768d, trigger lane: pinecone.promote (triggers keep the namespace in sync, ids are the primary
+# key) and pinecone.topk(table, query, k), next to remote_lanes_am_100k.yaml (same rows and queries). Its own serverless index,
+# pg-pinecone-bench-vec-lane-topk; a promoted table searches the heap exactly until the backfill is done, so the gate waits for mode remote.
+# topk sends topK = k, so k = 100 is one request. Two stages: --stage build, then --stage measure (deletes the index).
+name: remote_lanes_topk_100k
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+table: pg_pinecone_bench_vec_lane_topk
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 2000
+  log_min_error_statement: panic
+  shared_buffers: 4GB
+  maintenance_work_mem: 1GB
+
+remote:
+  rest_seconds: 20
+  delete_index_after: true
+  direct: {n: 1000, concurrency: [1, 4, 16], top_k: [10, 100]}
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 100000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pg_pinecone_remote_topk
+    type: pg_pinecone_remote_topk
+    build_params: {index_name: pg-pinecone-bench-vec-lane-topk}
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

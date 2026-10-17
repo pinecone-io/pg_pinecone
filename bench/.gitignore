@@ -1,0 +1,14 @@
+# Everything a run downloads, builds or writes is regenerated; nothing below is versioned.
+.data/
+.venv/
+.pgdata*
+*.log
+*.pid
+__pycache__/
+*.pyc
+.DS_Store
+target/
+
+# vector harness: dataset caches and timestamped results
+vector/datasets_cache/
+vector/results/

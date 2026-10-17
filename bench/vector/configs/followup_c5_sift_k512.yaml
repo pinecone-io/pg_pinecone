@@ -1,0 +1,61 @@
+# LABELED FOLLOW-UP: C5 k_bits spot-check. The record run capped SIFT k_bits
+# at 256 (dim-scaled: {64,128,256} for 128d) and
+# recall proved k_bits-BOUND, not probe-bound (scan_fraction 0.02->0.126
+# moved recall 0.751->0.742 while p50 went 0.40->1.00ms) -- k256's ceiling
+# was 0.925 @ 1.46ms vs the 0.95 @ <=1.2ms bar. This tests k512@128d (the
+# k_bits-dominates finding says wider codes are latency-free until Hamming
+# surfaces above the fetch cost) plus a low-fraction axis at the fixed
+# low pool, since C5's budget needs BOTH knobs at once.
+#
+# Main dataset section = the (cached) hard corpus with no systems: the
+# runner requires a dataset, SIFT runs via the sift1m section.
+name: followup_c5_sift_k512
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: []
+  modes: []
+  run: []
+
+systems: []
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: true
+  sift_n_queries: 500
+  sift_systems:
+    - name: pnat_sift_k512
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 512}
+      sweep_param: rescore_multiplier
+      sweep_values: [1, 2, 3, 4, 10]
+    - name: pnat_sift_k512_frac
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 512, rescore_multiplier: 2}
+      sweep_param: scan_fraction
+      sweep_values: [0.02, 0.04, 0.08]

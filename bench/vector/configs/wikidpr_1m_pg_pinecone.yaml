@@ -1,0 +1,69 @@
+# Record run, corpus 3 (real 768d 1M: facebook/wiki_dpr -- see
+# configs/baselines_exact_real.yaml's header for acquisition/holdout/geometry
+# provenance). Filtered bars (criteria 1,2,3,4) on real embeddings at the
+# headline dimensionality. Exact denominators come from the completed
+# baselines_exact_real run (same masks: k-means clustering is cached and
+# seeded, mask hashes must match); pgvector_hnsw cells rerun here because no
+# pgvector numbers exist on this corpus at all. No churn (real corpora have
+# no generative model -- the harness hard-errors), no SIFT.
+name: wikidpr_1m_pg_pinecone
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01, 0.10]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 80, 160]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+  - name: pnat_filt_1pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, mode_l_threshold: 0.005,
+                   filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+  - name: pnat_filt_10pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, mode_l_threshold: 0.005,
+                   filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

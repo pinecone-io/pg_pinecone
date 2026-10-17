@@ -1,0 +1,225 @@
+name: Release
+
+# Cut a release by pushing a v* tag (e.g. `git tag v0.2.1 && git push --tags`).
+# Builds a packaged pg_pinecone extension per OS/arch and Postgres major (17, 18),
+# smoke-tests each tarball on its Postgres, and attaches the tarballs to the
+# GitHub release. workflow_dispatch re-runs the build against an existing tag; it refuses to replace
+# tarballs already attached to that release unless `overwrite` is set (a re-run of a tag push's own
+# run replaces its earlier upload).
+#
+# Dry run: a PR touching this file (or the smoke script) also runs the full
+# six-leg build matrix (same jobs, same matrix) but skips create-release/upload
+# — it never touches a real release. This exists because v0.5.0 shipped a
+# release.yml change (per-arch RUSTFLAGS) that broke both arm64 legs, and the
+# matrix only ever builds at tag time, so nothing caught it pre-tag. Now editing
+# this file proves every platform x Postgres leg still builds before the edit merges.
+#
+# The build runs PR-controlled code (build scripts, proc-macros, the smoke script), so it gets
+# a read-only token that is not persisted in .git/config. Only create-release and upload hold
+# `contents: write`; neither runs on a PR.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/release.yml', 'scripts/release-smoke.sh']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach (e.g. v0.2.1)'
+        required: true
+      overwrite:
+        description: 'Replace tarballs already attached to the release (default: refuse)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PGRX_VERSION: 0.19.2
+  # No real tag on a dry-run PR — "dry-run" is a safe, slash-free stand-in
+  # (it only ever names a build artifact that never reaches a release).
+  RELEASE_TAG: ${{ github.event.inputs.tag || (github.event_name == 'pull_request' && 'dry-run' || github.ref_name) }}
+
+jobs:
+  # Guard the tag against Cargo.toml and ensure a release exists to upload
+  # into. Skipped entirely on the dry-run PR trigger — there's no tag and
+  # nothing should be created.
+  create-release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Verify tag matches crate version
+        run: |
+          crate_version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
+          if [ "$RELEASE_TAG" != "v$crate_version" ]; then
+            echo "Tag $RELEASE_TAG does not match pg_pinecone/Cargo.toml version $crate_version" >&2
+            exit 1
+          fi
+
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERWRITE: ${{ inputs.overwrite }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --latest
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$OVERWRITE" != true ]; then
+            attached=$(gh release view "$RELEASE_TAG" --json assets \
+              --jq '[.assets[].name | select(startswith("pg_pinecone-"))] | join(", ")')
+            if [ -n "$attached" ]; then
+              echo "::error::Release $RELEASE_TAG already has tarballs attached ($attached). Dispatch again with overwrite: true to replace them."
+              exit 1
+            fi
+          fi
+
+  package:
+    name: package (pg${{ matrix.pg }}, ${{ matrix.os }}-${{ matrix.arch }})
+    needs: create-release
+    # create-release is skipped (not failed) on the dry-run PR trigger; the
+    # default `needs` gate only admits an upstream `success()`, so it has to
+    # be relaxed to also admit `skipped()` or this job would never run there.
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        # platform x pg; each include entry attaches that platform's runner and flags.
+        pg: [17, 18]
+        platform: [linux-x86_64, linux-arm64, darwin-arm64]
+        include:
+          # rustflags: the x86_64 artifact must NOT build at Rust's generic
+          # x86-64 baseline — that baseline predates POPCNT, and the local
+          # engine's Hamming scan measured 2.6x slower there than a
+          # target-cpu=native build (recall bit-identical; GCP campaign,
+          # objdump-verified zero POPCNT in the generic artifact).
+          # x86-64-v3 (Haswell 2013+: POPCNT+AVX2) matches every cloud x86
+          # of the last decade; older CPUs need a source build (README's
+          # install section documents this floor).
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+            rustflags: '-C target-cpu=x86-64-v3'
+          # arm64 stays at the default baseline deliberately: CNT (the
+          # POPCNT equivalent) is aarch64-baseline, so there is no
+          # equivalent tax — and the explicit empty RUSTFLAGS guards
+          # against any environment-inherited downgrade.
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+            rustflags: ''
+          # macOS needs -Wl,-undefined,dynamic_lookup (Postgres symbols like
+          # CopyErrorData only exist inside the backend at runtime) — normally
+          # supplied by pg_pinecone/.cargo/config.toml, but the RUSTFLAGS env var
+          # below unconditionally shadows that file's target.rustflags
+          # (Cargo's env-vs-config precedence is all-or-nothing), so it must
+          # be repeated here explicitly or the darwin-arm64 link step fails.
+          - platform: darwin-arm64
+            runner: macos-14
+            os: darwin
+            arch: arm64
+            rustflags: '-Clink-arg=-Wl,-undefined,dynamic_lookup'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # On the dry-run PR trigger there's no RELEASE_TAG ref to check out —
+      # an empty `ref` falls back to actions/checkout's default (the PR's
+      # merge commit), same as omitting the input entirely.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      # One cache per Postgres major: pgrx-pg-sys builds differently on each.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pg${{ matrix.pg }}
+
+      - name: Install PostgreSQL ${{ matrix.pg }} (Linux, PGDG)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+          echo "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config" >> "$GITHUB_ENV"
+
+      - name: Install PostgreSQL ${{ matrix.pg }} (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install postgresql@${{ matrix.pg }}
+          echo "PG_CONFIG=$(brew --prefix postgresql@${{ matrix.pg }})/bin/pg_config" >> "$GITHUB_ENV"
+
+      - name: Install cargo-pgrx
+        run: cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
+
+      - name: cargo pgrx init
+        run: cargo pgrx init --pg${{ matrix.pg }} "$PG_CONFIG"
+
+      - name: Package extension
+        working-directory: pg_pinecone
+        env:
+          # Per-arch target features — see the matrix's rustflags comments.
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo pgrx package --pg-config "$PG_CONFIG"
+
+      - name: Build tarball
+        run: |
+          version="${RELEASE_TAG#v}"
+          pkg=$(find target -type d -name 'pg_pinecone-pg${{ matrix.pg }}' | head -1)
+          if [ -z "$pkg" ]; then echo "package dir not found" >&2; exit 1; fi
+          asset="pg_pinecone-${version}-pg${{ matrix.pg }}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          tar -C "$pkg" -czf "$asset" .
+          shasum -a 256 "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Release smoke
+        run: ./scripts/release-smoke.sh "$PG_CONFIG" "$ASSET"
+
+      # Also on the dry-run PR trigger: exercises the hand-off to `upload`.
+      - name: Keep the tarball for the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_pinecone-pg${{ matrix.pg }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Attaches the tarballs to the release once all six legs passed. Holds the write token, runs
+  # no repo code (no checkout), never runs on a PR.
+  upload:
+    if: github.event_name != 'pull_request'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pg_pinecone-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OVERWRITE: ${{ inputs.overwrite }}
+        run: |
+          # A tag push may be re-run over its own earlier upload. A dispatch replaces released
+          # tarballs only on request (create-release has already refused otherwise).
+          flags=()
+          if [ "$GITHUB_EVENT_NAME" = push ] || [ "$OVERWRITE" = true ]; then
+            flags+=(--clobber)
+          fi
+          gh release upload "$RELEASE_TAG" dist/* "${flags[@]}"

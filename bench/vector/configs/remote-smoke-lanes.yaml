@@ -1,0 +1,61 @@
+# Rehearsal of the other two Pinecone-backed lanes on 5,000 x 768d synthetic rows (about 31k write units, a few thousand read units):
+# a partitioned access-method index (10 tenants, WHERE tenant_id = $t) and the trigger lane (pinecone.promote + pinecone.topk), each
+# with its own serverless index, deleted at the end of its system. Needs PINECONE_API_KEY (or EE_ENV). Not a result worth reporting.
+# Run (from bench/vector): PG_PINECONE_BENCH_PG=<install prefix> STATE=<dir> RAW=<dir> .venv/bin/python run.py \
+#        --config configs/remote-smoke-lanes.yaml --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-remote-smoke-lanes" -v --allow-dirty
+name: remote_smoke_lanes
+seed: 42
+k: 10
+warmup_queries: 5
+min_throughput_seconds: 1.5
+table: pg_pinecone_bench_vec_smoke_lanes
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 500
+  log_min_error_statement: panic
+
+remote:
+  rest_seconds: 3
+  delete_index_after: true
+  gate_n: 100
+  direct: {n: 100, concurrency: [1, 2], top_k: [10]}
+
+partition:
+  column: tenant_id
+  n_tenants: 10
+  queries_per_tenant: 10
+  k_values: [10]
+
+dataset:
+  kind: synthetic
+  n: 5000
+  dim: 768
+  n_centers: 100
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pg_pinecone_remote_part
+    type: pg_pinecone_remote
+    skip_unfiltered: true
+    build_params: {partition_column: tenant_id}
+    sweep_param: am_min_topk
+    sweep_values: [50]
+    record_scan_stats: true
+
+  - name: pg_pinecone_remote_topk
+    type: pg_pinecone_remote_topk
+    build_params: {index_name: pg-pinecone-bench-vec-smoke-topk}
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 2]

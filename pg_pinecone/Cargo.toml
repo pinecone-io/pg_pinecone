@@ -1,0 +1,29 @@
+# pgrx extension crate
+[package]
+name = "pg_pinecone"
+version = "0.10.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+doctest = false
+
+[features]
+default = ["pg17"]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17"]
+pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
+# wiremock/tokio/ureq are real (not dev-)dependencies: pg_test code compiles into the
+# .so and runs inside the Postgres backend, so dev-dependencies wouldn't be linked in.
+pg_test = ["dep:tokio", "dep:ureq", "dep:wiremock"]
+
+[dependencies]
+pgrx = "=0.19.2"
+pg_pinecone-client = { path = "../pg_pinecone-client" }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt", "sync"], optional = true }
+ureq = { version = "3.3.0", features = ["json"], optional = true }
+wiremock = { version = "0.6.5", optional = true }
+
+[dev-dependencies]
+pgrx-tests = "=0.19.2"

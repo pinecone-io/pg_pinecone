@@ -1,0 +1,57 @@
+# Lane comparison at wiki_dpr 100k x 768d, access-method lane (CREATE INDEX ... USING pinecone, remote mode, no filter key), next to
+# remote_lanes_topk_100k.yaml (pinecone.promote + pinecone.topk) and the direct REST lane on the same namespace. Same rows, same queries.
+# Two stages: --stage build, then --stage measure (deletes the index).
+name: remote_lanes_am_100k
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+table: pg_pinecone_bench_vec_lane_am
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 2000
+  log_min_error_statement: panic
+  shared_buffers: 4GB
+  maintenance_work_mem: 1GB
+
+remote:
+  rest_seconds: 20
+  delete_index_after: true
+  direct: {n: 1000, concurrency: [1, 4, 16], top_k: [10, 50, 100]}
+  flood: {clients: 4, secs: 30, rest_s: 120, top_k: 50}
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 100000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pg_pinecone_remote
+    type: pg_pinecone_remote
+    build_params: {}
+    sweep_param: am_min_topk
+    sweep_values: [50]
+    sweep_values_by_k: {100: [50, 100]}
+    record_scan_stats: true
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

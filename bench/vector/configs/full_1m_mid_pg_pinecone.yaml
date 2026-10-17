@@ -1,0 +1,124 @@
+# Record run, corpus 2 (recalibrated mid-hardness 1M synthetic --
+# full_1m_mid.yaml's calibrated dataset geometry, see that file's header for
+# the calibration evidence). Carries criteria 1,2,3,4 (filtered bars), 7
+# (build/size), 8 (REINDEX-shaped churn), 9 (query-time RSS).
+#
+# Systems, in run order:
+# - exact_seqscan: this corpus's OWN measured exact denominators for the two
+#   bar-carrying filters (the completed baselines_exact run measured the HARD
+#   corpus's masks, not this one's -- exact-scan cost is geometry-insensitive
+#   (~113-117ms at 1% across corpora) but the criteria demand measured
+#   denominators on the corpus that carries the bar).
+# - pgvector_hnsw (trimmed sweep): same-corpus comparison context for the
+#   filtered bars. The committed full_1m results are the HARD corpus; corpus
+#   changed -> these cells rerun (rerun only cells whose config/corpus
+#   changed). relaxed_order at the auto budget only (the hard corpus showed
+#   the 20000 budget is strictly dominated and iterative-off collapses --
+#   both are established context, not worth 1M-scale hours again).
+# - pg_pinecone_native x2 filtered builds (one per bar filter -- one filter column
+#   per index) + one unfiltered build (a clean build/size point
+#   + unfiltered corpus-2 context).
+#
+# Defaults from the 50k sweep (results/sweep_pg_pinecone_50k_20260912T041826Z, a
+# clean-tree run): k_bits=1024 (recall is k_bits-bound and latency is NOT --
+# k256..k1024 measured latency-identical per rm while recall rose
+# 0.856->0.986 at rm=20; index size at 1M ~180MB, still under the 0.5GB
+# bar), rm sweep {1,2,4,8,12} (the engine's rescore pool is rm *
+# ASSUMED_TOP_K(100), not rm * k, and the measured cost model is p50 ~=
+# scan_fixed + 27.6us * pool -- rm IS the latency knob, low-pool points
+# carry the latency-bound bars), mode_l_threshold=0.005 on the filtered
+# systems so the 1%/10% cells route to mode H (mode L rescores the WHOLE
+# qualifying set: ~11k fetches ~ 300ms at 1M for 1%, worse than the 117ms
+# exact scan -- measured at 50k: mode L at 10% = 5000 fetches = 138.5ms,
+# exactly 27.6us each). A separate force_scan_mode=l system records mode
+# L's honest number at the 1% cell on this corpus only.
+name: full_1m_mid_pg_pinecone
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 8000
+  cluster_sigma: 0.35
+  cluster_scale_mix: [0.8, 1.0, 1.25]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01, 0.10]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  - name: exact_seqscan
+    type: exact
+    build_params: {}
+    sweep_param: none
+    sweep_values: [0]
+    # Filtered denominators only: the unfiltered exact scan is corpus-
+    # geometry-independent and already measured at 1M x 768d on two corpora
+    # (~8.9s p50) -- re-measuring it here would cost ~2.5h for a number
+    # already on record (see System.skip_unfiltered).
+    skip_unfiltered: true
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 80, 160]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+  - name: pnat_unfilt
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+  - name: pnat_filt_1pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, mode_l_threshold: 0.005,
+                   filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+  - name: pnat_filt_1pct_model
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, force_scan_mode: l,
+                   filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [10]   # mode L has no rescore-pool cap; one point suffices
+  - name: pnat_filt_10pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, mode_l_threshold: 0.005,
+                   filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: true
+  cycles: 3
+  reembed_pct: 0.02
+  delete_reinsert_pct: 0.02
+  vacuum_after_each_cycle: true
+  system: {name: pnat_churn, type: pg_pinecone_native,
+           build_params: {seed: 42, k_bits: 1024, rescore_multiplier: 10},
+           sweep_param: rescore_multiplier, sweep_values: [10]}
+  sweep_value: 10
+
+sift1m:
+  enabled: false

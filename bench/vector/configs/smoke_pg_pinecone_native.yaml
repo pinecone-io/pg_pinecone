@@ -1,0 +1,100 @@
+# Smoke config: pg_pinecone_native plumbing proof, not a comparison run of
+# record. Same dataset shape as configs/smoke.yaml (identical seed/n/dim/
+# n_centers/cluster_sigma/cluster_scale_mix/background_frac -- reuses the
+# same cached synthetic dataset + hardness calibration) so pgvector_hnsw's
+# numbers here are directly comparable to the committed smoke run, but the
+# system list, filter matrix, and concurrency are trimmed hard for wall time:
+# this config exists to prove the harness/engine PLUMBING end to end
+# (EXPLAIN-gated index usage, pinecone.last_scan_mode() assertions, tie-aware
+# recall, plan-shape tags, provenance stamps) at 50k rows, not to produce a
+# result worth reporting as a benchmark number. Run with
+# `--data-dir` pointed at a scratch directory on a free port -- NEVER the
+# default bench/vector/.pgdata while another run (e.g. a baselines series) might
+# already own it.
+name: smoke_pg_pinecone_native
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+
+systems:
+  # Comparison anchor -- trimmed sweep (2 points, 1 conn only) purely so a
+  # plumbing run finishes in minutes; configs/smoke.yaml is the real
+  # pgvector_hnsw smoke result of record.
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 40]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  # Unfiltered build (no filter_column) -- exercises the plain ivf_scan path
+  # (MODE_H expected for every unfiltered query; n=50000 > small_n_threshold
+  # so this is NOT the small-N flat bootstrap).
+  - name: pg_pinecone_native_unfilt
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, small_n_threshold: 1000, rescore_multiplier: 10}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10, 20]
+
+  # Filtered build against the 1% correlated filter's equality-mirror column
+  # (loader.filter_eq_column_name), auto mode selection: realized selectivity
+  # ~0.01 <= the default pinecone.mode_l_threshold (0.03), so mode L is expected
+  # -- filter-first exact scan, recall 1.0 by construction.
+  - name: pg_pinecone_native_filt_l
+    type: pg_pinecone_native
+    build_params:
+      seed: 42
+      k_bits: 512
+      small_n_threshold: 1000
+      rescore_multiplier: 10
+      mode_l_threshold: 0.03
+      filter_column: filt_correlated_0010_eq
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10, 20]
+
+  # Same build, but pinecone.force_scan_mode='h' forces the IVF-probe + in-loop
+  # filter path regardless of estimated selectivity -- exercises the OTHER
+  # mode-assertion branch (mode H) that the mode_l_threshold default alone
+  # wouldn't reach at this selectivity.
+  - name: pg_pinecone_native_filt_h
+    type: pg_pinecone_native
+    build_params:
+      seed: 42
+      k_bits: 512
+      small_n_threshold: 1000
+      rescore_multiplier: 10
+      filter_column: filt_correlated_0010_eq
+      force_scan_mode: h
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 10, 20]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

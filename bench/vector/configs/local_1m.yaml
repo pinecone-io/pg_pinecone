@@ -1,0 +1,70 @@
+# Unfiltered local engines at wiki_dpr 1M x 768d: pgvector hnsw and ivfflat, pg_pinecone native, forced exact seqscan.
+# recall@10 and recall@100 against exact ground truth, latency p50/p95/p99 and QPS at 1, 4 and 16 clients, build time, index
+# size. Same artifact, seed, k-means and ground-truth caches as configs/residual-c1.yaml (dataset key real_fd937e5862449934).
+# configs/full_1m.yaml is the 2026-09 synthetic run (hnsw and
+# ivfflat only, churn, SIFT, 6.1 h) and measures neither native, exact nor wiki_dpr.
+# warmup_queries is 10 because 16 clients x 10 = the 160 warm-up vectors the artifact holds.
+# The knob grids follow wikidpr_1m_pg_pinecone.yaml; ef_search must be >= k to return k rows,
+# so k = 100 sweeps its own values (sweep_values_by_k).
+name: local_1m
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320]
+    sweep_values_by_k: {100: [100, 160, 320, 640]}
+
+  - name: pgvector_ivfflat
+    type: ivfflat
+    build_params: {lists: null}
+    sweep_param: probes
+    sweep_values: [1, 2, 4, 8, 16, 32, 64]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 10, 20, 50]
+
+  - name: exact_seqscan
+    type: exact
+    k_values: [10]
+    max_queries: 200
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

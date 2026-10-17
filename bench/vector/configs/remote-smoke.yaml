@@ -1,0 +1,56 @@
+# Rehearsal of the Pinecone-backed lane: 5,000 x 768d synthetic rows, one real serverless index (about 15.5k write units,
+# a few thousand read units: well under $0.10). Needs PINECONE_API_KEY (or EE_ENV) and a Postgres whose install holds
+# pg_pinecone 0.9.0. Proves create_index, backfill watch, gate, EXPLAIN-gated sweep with 429 handling, a pushed key plus a
+# residual, the direct REST lane and teardown. Not a result worth reporting.
+# Run (from bench/vector): PG_PINECONE_BENCH_PG=<install prefix> STATE=<dir> RAW=<dir> .venv/bin/python run.py \
+#        --config configs/remote-smoke.yaml --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-remote-smoke" -v --allow-dirty
+name: remote_smoke
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 5
+min_throughput_seconds: 1.5
+table: pg_pinecone_bench_vec_smoke
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 500
+  log_min_error_statement: panic
+
+remote:
+  rest_seconds: 3
+  delete_index_after: true
+  gate_n: 100
+  direct: {n: 100, concurrency: [1, 2], top_k: [50]}
+
+dataset:
+  kind: synthetic
+  n: 5000
+  dim: 768
+  n_centers: 100
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+
+filters:
+  run:
+    - {selectivity: 0.05, mode: correlated, query_modes: [out_region]}
+    - {selectivity: 0.05, mode: correlated, residual: {selectivity: 0.10, mode: uncorrelated}, query_modes: [out_region]}
+
+systems:
+  - name: pg_pinecone_remote
+    type: pg_pinecone_remote
+    build_params: {filter_column: filt_correlated_0050_eq}
+    sweep_param: am_min_topk
+    sweep_values: [10, 50]
+    record_scan_stats: true
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [2000]
+
+concurrency: [1, 2]

@@ -1,0 +1,116 @@
+# Rehearsal of configs/halfvec_1m.yaml before its 2.5 to 3 h box run: every kind of system it runs, in its order, on a 50,000 x 768d
+# synthetic corpus with trimmed sweeps. FP32 hnsw, the FP16 expression index with 5x FP32 rerank, the four native builds per
+# target_recall (the 0.95 build with its scan_fraction x rescore_multiplier grid), the forced exact FP32 scan, then the reload to the
+# FP16 heap with its hnsw and forced exact FP16 scan; k = 10 and 100, 1 and 4 clients, fp32_column_storage plain. Proves the
+# target_recall DDL, the stamped pinecone.index_calibration() and pinecone.scan_prune, the calibrated-default (0) and override points,
+# scan stats, the rerank SQL at k = 100 and the heap reload around the native arms. 50,000 rows (224 lists) clear small_n_threshold
+# (10,000), so the native index is clustered and calibrated; at 20,000 the planner costs a seqscan below the 0.99 build's 1,000-row pool.
+# The grid's fractions (0.1, 0.5: 23 and 112 lists) bracket the calibrated probe count, as 0.025 to 0.4 of 1,000 lists do at 1M.
+# Too small to compare speed or quality, not a result worth reporting. Its own synthetic corpus, generated on first use.
+# Run (from bench/vector; PG_PINECONE_BENCH_PG = a Postgres 17 with pgvector and pg_pinecone from main installed, or an external one):
+#   env -u PINECONE_API_KEY .venv/bin/python run.py --config configs/smoke-halfvec-native.yaml \
+#       --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-hvnative" -v
+# On the box: phase.sh hv_smoke (box/README.md, "Halfvec session").
+# Wall time: 80 s (verified 2026-10-16 against PostgreSQL 17.11 / pgvector 0.8.7 / pg_pinecone 0.10.0 from main in Docker on a laptop).
+name: smoke_halfvec_native
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 0.5
+fp32_column_storage: plain
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+filters:
+  run: []
+
+systems:
+  - name: pgvector_fp32_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 160]
+    sweep_values_by_k: {100: [160]}
+
+  - name: pgvector_fp16_rerank_5x
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    rerank_multiplier: 5
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [50, 160]
+    sweep_values_by_k: {100: [500]}
+
+  - name: pg_pinecone_native_t090
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.90}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  - name: pg_pinecone_native_t095
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.95}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 5, 20]
+    sweep_values_by_k: {100: [0, 10, 50]}
+    scan_fraction_values: [0, 0.1, 0.5]
+    record_scan_stats: true
+
+  - name: pg_pinecone_native_t098
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.98}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  - name: pg_pinecone_native_t099
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.99}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  - name: fp32_exact_seqscan
+    type: exact
+    k_values: [10]
+    max_queries: 50
+    sweep_param: none
+    sweep_values: [0]
+
+  - name: pgvector_fp16_heap
+    type: hnsw
+    storage_type: halfvec
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 160]
+    sweep_values_by_k: {100: [160]}
+
+  - name: fp16_exact_seqscan
+    type: exact
+    storage_type: halfvec
+    index_type: halfvec
+    k_values: [10]
+    max_queries: 50
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4]
+churn: {enabled: false}
+sift1m: {enabled: false}

@@ -1,0 +1,78 @@
+# LABELED FOLLOW-UP (not a fresh record claim): C1 / C3-cross probe-coverage
+# test on corpus 3. The record run's C1 recall plateaued at 0.833 flat across
+# rescore_multiplier -- the hypothesis is a probe-
+# COVERAGE ceiling: nprobe = 12.6% of lists nearest the query only partially
+# overlaps a correlated filter's qualifying clusters for out-of-region
+# queries. pinecone.scan_fraction buys coverage at scan-time (no rebuild). This
+# run sweeps it upward from the record run's default anchor (0.126) to the
+# exact-coverage anchor (1.0 = probe everything; recall then bounded only by
+# Hamming ranking within the full qualifying set).
+#
+# NOTE the record-run indexes did NOT survive (each run initdb's a fresh
+# .pgdata), so the builds here are re-runs of the same reloptions (same seed
+# -> same k-means/codes by construction).
+#
+# skip_unfiltered on both systems: at these settings (pool >= 200, fraction
+# >= 0.126) the unfiltered cheapest point is ~0.99+ recall, which would trip
+# the hardness gate that exists for CALIBRATION runs -- this is a filtered
+# COVERAGE probe on an already-characterized corpus, and the unfiltered
+# cells were already measured in the record run.
+name: followup_c1_wikidpr
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+
+systems:
+  # Recall-first: generous pool (rm=12 -> 1200) so coverage is the only
+  # binding constraint; 0.126 anchors to the record run's default-fraction
+  # points (must reproduce ~0.833).
+  - name: pnat_f1_rm12
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    build_params: {seed: 42, k_bits: 1024, rescore_multiplier: 12,
+                   mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: scan_fraction
+    sweep_values: [0.126, 0.25, 0.5, 1.0]
+  # Latency-optimal check at the plausible achieving fractions: if 0.95 is
+  # reachable, this is the point that decides whether C1's <=37.9ms bar
+  # survives the coverage cost.
+  - name: pnat_f1_rm2
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    build_params: {seed: 42, k_bits: 1024, rescore_multiplier: 2,
+                   mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: scan_fraction
+    sweep_values: [0.25, 0.5]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

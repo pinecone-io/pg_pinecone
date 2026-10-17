@@ -1,0 +1,74 @@
+# Pinecone-backed access-method lane at wiki_dpr 1M x 768d, unfiltered queries: CREATE INDEX ... USING pinecone in remote mode
+# (pinecone.create_index(engine => 'remote', filter_column => the 1% correlated key)), a serverless aws us-east-1 index named
+# pv-public-pg-pinecone-bench-vec-1m by the extension, dimension 768, metric euclidean (this harness's l2).
+# Two stages in one --data-dir so a long backfill survives anything after it:
+#   run.py --config configs/remote_1m.yaml --data-dir D --stage build     load, create the index, backfill, gate (76 min at worker
+#                                                                         naptime 100; about 5.6 h at the default 2000), then stop
+#   run.py --config configs/remote_1m.yaml --data-dir D --stage measure   recall@10/@100, latency at 1/4/16 clients, direct REST
+#   run.py --config configs/remote_filtered.yaml --data-dir D --stage measure   the pushed key plus residuals; deletes the index
+# The index carries the filter key as metadata, so the same index serves the unfiltered and the filtered cells; `filters.load`
+# only creates the columns remote_filtered.yaml queries. Pinecone allows 100 queries per second per namespace and answers the
+# excess with 429, which pg_pinecone raises as an error: c = 4 and 16 report the rejected share, `rest_seconds` lets the allowance refill.
+# am_min_topk: the first topK the scan sends (default 50, also for LIMIT 10); LIMIT 100 re-queries at topK x 4 unless it is >= 100.
+# pinecone.worker_naptime_ms is 100 here, not the shipped 2000: the worker sleeps that long after every round of about one 200-row
+# chunk, so the default moved 43 to 55 rows/s at 5k and 100k rows (a partitioned index 193 rows/s) against 220 rows/s here, and a 1M
+# backfill at the default would have taken about 5.6 h of an 8 h box.
+# Spend is tallied per request (harness/remote.py) and stops the run at 6M write units, 1M read units or $40.
+name: remote_1m
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+table: pg_pinecone_bench_vec_1m
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 100
+  log_min_error_statement: panic
+  shared_buffers: 4GB
+  maintenance_work_mem: 1GB
+
+remote:
+  rest_seconds: 20
+  delete_index_after: false
+  direct: {n: 1000, concurrency: [1, 4, 16], top_k: [10, 50]}
+  flood: {clients: 4, secs: 30, rest_s: 120, top_k: 50}
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  load:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.003, mode: uncorrelated}
+    - {selectivity: 0.01, mode: uncorrelated}
+  run: []
+
+systems:
+  - name: pg_pinecone_remote
+    type: pg_pinecone_remote
+    build_params: {filter_column: filt_correlated_0010_eq}
+    sweep_param: am_min_topk
+    sweep_values: [10, 50, 100]
+    sweep_values_by_k: {100: [50, 100, 200]}
+    record_scan_stats: true
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

@@ -1,0 +1,52 @@
+# Re-run of the pn_model_k1 system of residual-ext.yaml (the first run named it with a capital L, which Postgres folds in the index name), both C1 cells.
+# Same harness, same dataset, 1 and 8 clients. Cells: C1 (1% key + 0.3% residual, 33 rows), C2 (10% key + 0.3% residual, 326 rows).
+#   pn_pool_k1 / pn_pool_k10: relaxed_order, cap 20000, rescore_multiplier {50,100,200} x scan_fraction {0.5 (ramp), 1.0}
+#   pn_model_k1: mode_l_threshold left at the shipping 0.03, so the 1% key routes to mode L (exact over the key rows)
+name: residual_ext2
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}}
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.01, mode: uncorrelated}}
+    
+systems:
+  - name: pn_model_k1
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, filter_column: filt_correlated_0010_eq}
+    sweep_param: mode_l_threshold
+    sweep_values: [0.03]
+    iterative_scan_values: ["off"]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

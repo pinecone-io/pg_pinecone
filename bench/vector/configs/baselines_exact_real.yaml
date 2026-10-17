@@ -1,0 +1,81 @@
+# Forced-seqscan exact baselines on the REAL 768d corpus (the real-corpus
+# companion of baselines_exact.yaml). Same series construction as
+# configs/baselines_exact.yaml (see that file's header for the methodology);
+# only the dataset differs.
+#
+# CORPUS: facebook/wiki_dpr -- DPR-encoded English Wikipedia passages, 768d
+# fp32, REAL embeddings at the headline dimensionality (no dimension
+# deviation). Publicly downloadable without auth from
+# dl.fbaipublicfiles.com/dpr/data/wiki_encoded/single/nq/wiki_passages_{0..3}
+# (4 shards, 5.3GB total, within the 6GB budget; the Cohere wikipedia-22-12
+# sets are gated on HF as of 2026-09, and CohereLabs/wikipedia-2023-11 is
+# 1024d). Shards were converted once to datasets_cache/wikidpr_768d_1m.npz:
+# first 1,000,000 passages in corpus order as the base set; from the
+# REMAINING 681,224 passages a seed-42 shuffle takes 500 measured queries,
+# 160 warmup vectors, and a 100,000-vector query bank -- all held out, all
+# real. Converter provenance (shard URLs, content sha) is embedded in the
+# artifact's meta_json and stamped into the dataset key.
+#
+# Geometry sanity (measured at conversion): norms mean 12.22 std 0.36
+# (min 10.98, max 14.98 -- DPR vectors are unnormalized, trained for inner
+# product); pairwise distance over a 500-point sample: mean 12.44, p5 10.80,
+# p95 13.96. Metric here is l2 for consistency with every other corpus here; the corpus geometry (not the training objective) is what the
+# baseline measures.
+#
+# FILTERS: cluster structure for the filter matrix comes from k-means
+# (k=1000, numpy Lloyd on a 100k sample, 15 iters, seed 42, cached beside the
+# artifact): correlated = whole k-means clusters until target selectivity
+# (same correlated_chosen_clusters rule as synthetic), uncorrelated = random.
+# In-region ("tenant") queries are REAL held-out bank vectors whose nearest
+# centroid is inside the qualifying region. NOTE: the 100k bank holds ~1000
+# in-region vectors at 1% selectivity (enough for the 660-query pool) but
+# only ~100 at 0.1% -- there the pool is sampled WITH REPLACEMENT and the
+# results JSON records n_unique_available per filter (in_region_sampling).
+#
+# No churn (real corpora have no generative model to re-draw from -- the
+# harness hard-errors if enabled), no SIFT (independent sanity anchor,
+# already run).
+name: baselines_exact_real
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.001, 0.01, 0.10, 0.50]
+  modes: [correlated, uncorrelated]
+  run:
+    - {selectivity: 0.001, mode: correlated}
+    - {selectivity: 0.001, mode: uncorrelated}
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: uncorrelated}
+    - {selectivity: 0.10, mode: correlated}
+    - {selectivity: 0.10, mode: uncorrelated}
+    - {selectivity: 0.50, mode: correlated}
+    - {selectivity: 0.50, mode: uncorrelated}
+
+systems:
+  - name: exact_seqscan
+    type: exact
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 8]

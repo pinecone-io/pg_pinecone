@@ -1,0 +1,49 @@
+# ~40-second end-to-end regression gate for the exact-seqscan path.
+#
+# Run BEFORE launching any long record run:
+#   .venv/bin/python run.py --config configs/ci_tiny_exact.yaml --allow-dirty
+#
+# What it proves, via the harness's own hard gates (a failure raises, so
+# "the command exited 0" is the assertion):
+# - the (ids, dists) ground-truth tuple format flows through run_sweep /
+#   run_sweep_point / the worker pool / tie-aware recall_at_k end to end
+#   (the 2026-09-12 4-vs-5 worker-return-arity crash class);
+# - every point EXPLAIN-verifies plan_shape=seqscan_forced (forced-plan GUCs
+#   applied in both the plan-capture and worker sessions);
+# - _assert_exact_recall holds recall == 1.0 on every cell, both query
+#   regimes, at 1 and 2 connections (multi-worker barrier/slicing paths).
+#
+# Tiny on purpose: 20k x 32d synthetic, 50 queries. Exists because the class
+# of bug it guards against only manifests inside the pool-worker plumbing,
+# which no pure unit test exercises honestly.
+name: ci_tiny_exact
+seed: 42
+k: 10
+warmup_queries: 5
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.0
+
+dataset:
+  kind: synthetic
+  n: 20000
+  dim: 32
+  n_centers: 50
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 50
+
+metric: l2
+
+filters:
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: uncorrelated}
+
+systems:
+  - name: exact_seqscan
+    type: exact
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 2]

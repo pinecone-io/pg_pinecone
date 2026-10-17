@@ -1,0 +1,86 @@
+# Record run, corpus 1 (SIFT1M 128d real -- unfiltered
+# recall 0.95 @ p50 <= 1.2ms) PLUS the hard-synthetic unfiltered floor
+# (>= 0.677 @ <= 5.5ms on the original full_1m corpus, floor
+# only, labeled stress appendix -- the corpus flatters IVF).
+#
+# The main dataset section IS the hard corpus (same params as full_1m.yaml's
+# dataset -- reuses the cached dataset + cached unfiltered ground truth from
+# the runs of record). SIFT runs via the sift1m section with pg_pinecone systems at
+# SIFT's dim-adapted k_bits ({64,128,256} for 128d). No filters here: both corpora carry unfiltered
+# bars only. pgvector SIFT anchors are the committed full_1m run (hnsw 0.95
+# @ 0.61ms) -- config unchanged, corpus unchanged, so NOT rerun.
+#
+# rm sweep leans LOW ({1,2,3,4} plus a 10 sanity point): the 1.2ms
+# budget cannot afford a 1000-fetch rescore pool (pool = rm * 100 -- see
+# full_1m_mid_pg_pinecone.yaml's header note); scan_fraction swept as the second
+# axis via separate low-fraction system entries at the most promising k_bits
+# once the 50k sweep picks it.
+name: sift_hard_pg_pinecone
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: []
+  modes: []
+  run: []
+
+systems:
+  # Criterion 6 floor on the hard corpus: unfiltered only.
+  - name: pnat_floor
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 8, 12]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: true
+  sift_n_queries: 500
+  sift_systems:
+    - name: pnat_sift_k64
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 64}
+      sweep_param: rescore_multiplier
+      sweep_values: [1, 2, 3, 4, 10]
+    - name: pnat_sift_k128
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 128}
+      sweep_param: rescore_multiplier
+      sweep_values: [1, 2, 3, 4, 10]
+    - name: pnat_sift_k256
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 256}
+      sweep_param: rescore_multiplier
+      sweep_values: [1, 2, 3, 4, 10]
+    # The 1.2ms bar can't afford the default 12.6% probe fraction if the
+    # scan side costs anything at 1M -- scan_fraction swept at a fixed low
+    # pool (rm=2 -> 200 fetches) on the widest-code build.
+    - name: pnat_sift_k256_frac
+      type: pg_pinecone_native
+      build_params: {seed: 42, k_bits: 256, rescore_multiplier: 2}
+      sweep_param: scan_fraction
+      sweep_values: [0.02, 0.04, 0.08, 0.126]

@@ -1,0 +1,108 @@
+# Knob sweep at 50k (sweep k_bits x rescore_multiplier +
+# scan_fraction + the mode_l_threshold boundary BEFORE the 1M record cells,
+# to pick defaults). 50k proxy caveat, stated up front: n_lists = auto =
+# ceil(sqrt(n)) = 224 here vs 1000 at 1M, so the DEFAULT probe fraction
+# (4/sqrt(n_lists)) is 26.7% here vs 12.6% at 1M -- absolute latencies and
+# the recall-vs-scan_fraction curve do NOT transfer to 1M; the
+# k_bits-vs-rescore_multiplier RECALL tradeoff (per-candidate Hamming
+# quality, scale-free) and the mode-boundary behavior are what this run is
+# for. Defaults picked here get confirmed with sensitivity spot-checks at 1M
+# before any record cell depends on them.
+#
+# Same 50k/768d dataset as configs/smoke.yaml (same cache). No pgvector
+# systems: this run picks pg_pinecone defaults, it compares nothing. Run with
+# --data-dir at a scratch path (the baselines series owns bench/vector/.pgdata).
+name: sweep_pg_pinecone_50k
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.01, 0.10]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  # --- k_bits x rescore_multiplier grid (unfiltered mode-H recall is the
+  # signal; k_bits is a build-time reloption, so one system per value) ---
+  - name: pnat_k256
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 256, small_n_threshold: 1000}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 8, 12, 16, 20]
+  - name: pnat_k512
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, small_n_threshold: 1000}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 8, 12, 16, 20]
+  - name: pnat_k768
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 768, small_n_threshold: 1000}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 8, 12, 16, 20]
+  - name: pnat_k1024
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 1024, small_n_threshold: 1000}
+    sweep_param: rescore_multiplier
+    sweep_values: [4, 8, 12, 16, 20]
+
+  # --- scan_fraction sweep at fixed k_bits/rescore (the latency lever;
+  # 0.267 = this scale's build-time default 4/sqrt(224), included so the
+  # sweep brackets it) ---
+  - name: pnat_k512_scanfrac
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, rescore_multiplier: 10, small_n_threshold: 1000}
+    sweep_param: scan_fraction
+    sweep_values: [0.05, 0.10, 0.15, 0.20, 0.267]
+
+  # --- mode_l_threshold boundary sweeps: expected mode must flip exactly
+  # where the harness's per-point prediction says (realized selectivity
+  # ~0.011 and ~0.10; values chosen OFF the exact boundary -- float-equality
+  # at the boundary would make the assertion itself flaky) ---
+  - name: pnat_boundary_1pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, rescore_multiplier: 10, small_n_threshold: 1000,
+                   filter_column: filt_correlated_0010_eq}
+    sweep_param: mode_l_threshold
+    sweep_values: [0.005, 0.02, 0.05]
+  - name: pnat_boundary_10pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, k_bits: 512, rescore_multiplier: 10, small_n_threshold: 1000,
+                   filter_column: filt_correlated_0100_eq}
+    sweep_param: mode_l_threshold
+    sweep_values: [0.05, 0.15, 0.30]
+
+concurrency: [1]
+
+# REINDEX-shaped churn plumbing proof (run_churn_pg_pinecone_native has never
+# executed end to end before this run; the 1M churn cell must not be its
+# first execution). 3 cycles of 5%+5% at 50k.
+churn:
+  enabled: true
+  cycles: 3
+  reembed_pct: 0.05
+  delete_reinsert_pct: 0.05
+  vacuum_after_each_cycle: true
+  system: {name: pnat_churn, type: pg_pinecone_native,
+           build_params: {seed: 42, k_bits: 512, rescore_multiplier: 10, small_n_threshold: 1000},
+           sweep_param: rescore_multiplier, sweep_values: [10]}
+  sweep_value: 10
+
+sift1m:
+  enabled: false

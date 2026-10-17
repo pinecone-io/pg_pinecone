@@ -1,0 +1,141 @@
+# Full-scale config: 1M rows, dim 768. NOT run as part of the first proof --
+# re-derive the projected cost from a fresh smoke run's actual numbers (see
+# bench/vector/README.md "Smoke results") before actually running this; the
+# breakdown below is pre-methodology-fix history, kept only for the
+# VACUUM-cost shape of the finding (re-verify at full scale, don't headline
+# from this comment -- see README).
+#
+# Pre-fix smoke run (50k rows, dim 768, this machine, 2026-09-09, thread-based
+# concurrency, cross-system index contamination present, sigma=0.3):
+# wall_seconds=666 (11m). Breakdown: hnsw build 18.5s, ivfflat build 5.0s,
+# ~90 query-sweep points a few seconds each, SIFT1M hnsw build 51.7s. The
+# dominant, non-obvious cost was churn's VACUUM: 3 cycles of 5% reembed + 5%
+# delete/reinsert (5000 dead tuples out of 50k rows) took 138s / 127s / 153s
+# of VACUUM each -- ~7 minutes of the 11-minute total. pgvector's HNSW
+# ambulkdelete does not scale gently with dead-tuple count. full.yaml's churn
+# is 10 cycles x 2%/2% on 1M rows (20k dead tuples/cycle, 4x this run's
+# count, on a 20x bigger graph) -- budget VACUUM alone at 10s of minutes *per
+# cycle*, i.e. hours for the churn workload by itself. Consider cutting
+# cycles or reembed/delete pct for a first full run, and always run churn
+# last so a slow VACUUM doesn't block collecting the filter/concurrency
+# sweep data. TO RE-VERIFY AT FULL SCALE, not a settled finding.
+#
+# Cost adders vs. the number above: process-based
+# concurrency spawns worker processes per sweep call instead of
+# reusing threads -- a few seconds of overhead per (system, filter, query
+# mode) combination, not per point. The in-region query mode roughly
+# doubles the filtered-sweep portion (it's a second full sweep per correlated
+# filter spec). EXPLAIN-gate checks add one cheap non-executing
+# planning query per point. Get a fresh smoke number before trusting any of
+# this to scale.
+#
+# Index builds and query sweeps themselves scale roughly as expected (build
+# worse-than-linear in rows, ~20x smoke's row count here); budget the sweep
+# portion at 20-40x smoke's non-churn, non-SIFT wall time.
+#
+# Further cost adders vs. the numbers above: each sweep point now
+# also runs a >=`min_throughput_seconds`-long throughput pass per point
+# -- budget +5s x (points per system), dominated by whichever
+# grid is largest; hnsw's filtered relaxed_order sweep doubles its point
+# count (two scan_budget values); ivfflat's filtered sweep gets
+# a forced-index companion series if the planner never picks it at all
+# (observed in an earlier smoke run). Get a fresh smoke number
+# under the current code before trusting any of this to scale.
+name: full
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97   # reported == enforced
+# Full 5s throughput-pass floor per sweep point -- see configs/smoke.yaml's comment for why this exists; full-scale
+# rows are slow enough per-query that this rarely binds beyond the default
+# anyway, unlike the cheap smoke-scale sweep points that motivated it.
+min_throughput_seconds: 5.0
+
+# Pgvector's hnsw build holds the whole graph in
+# maintenance_work_mem until it doesn't fit, then spills to disk (visibly
+# slower, and the build emits a NOTICE the harness now captures into
+# build_notices/graph_spilled_to_disk). At 1M rows x 768 dim, vectors alone
+# are ~3GB (1e6 * 768 * 4 bytes) before graph-edge overhead -- comfortably
+# over pg/tuned.conf's 2GB default, which would spill immediately. Raised to
+# 8GB: this machine has 36GB RAM, 8GB is already committed to
+# shared_buffers (server-wide, persistent), and maintenance_work_mem is only
+# held transiently during a build (this harness runs one build at a time) --
+# 8GB+8GB still leaves >15GB free even if both are maxed out simultaneously.
+postgres:
+  maintenance_work_mem: 8GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  # Same calibration as configs/smoke.yaml -- see its dataset comment for the
+  # calibration rationale. Re-check dataset.geometry +
+  # hardness_check in this config's own results JSON before trusting it
+  # transfers unchanged to 1M rows / different lists heuristic.
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.001, 0.01, 0.10, 0.50]
+  modes: [correlated, uncorrelated]
+  run:
+    - {selectivity: 0.001, mode: correlated}
+    - {selectivity: 0.001, mode: uncorrelated}
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: uncorrelated}
+    - {selectivity: 0.10, mode: correlated}
+    - {selectivity: 0.10, mode: uncorrelated}
+    - {selectivity: 0.50, mode: correlated}
+    - {selectivity: 0.50, mode: uncorrelated}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+    # See configs/smoke.yaml's comment. "auto"
+    # resolves to max(100000, 10% of 1_000_000) = 100000 for this config.
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [20000, auto]
+  - name: pgvector_ivfflat
+    type: ivfflat
+    build_params: {lists: null}  # heuristic => sqrt(1_000_000) = 1000 lists
+    sweep_param: probes
+    sweep_values: [1, 2, 4, 8, 16, 32, 64]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: true
+  cycles: 10
+  reembed_pct: 0.02
+  delete_reinsert_pct: 0.02
+  vacuum_after_each_cycle: true
+  system: {name: pgvector_hnsw, type: hnsw, build_params: {m: 16, ef_construction: 64},
+           sweep_param: ef_search, sweep_values: [80]}
+  sweep_value: 80
+
+sift1m:
+  enabled: true
+  sift_n_queries: 500
+  sift_systems:
+    - name: pgvector_hnsw
+      type: hnsw
+      build_params: {m: 16, ef_construction: 64}
+      sweep_param: ef_search
+      sweep_values: [10, 20, 40, 80, 160, 320]
+    - name: pgvector_ivfflat
+      type: ivfflat
+      build_params: {lists: null}
+      sweep_param: probes
+      sweep_values: [1, 2, 4, 8, 16, 32, 64]

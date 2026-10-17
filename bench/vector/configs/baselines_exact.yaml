@@ -1,0 +1,80 @@
+# Forced-seqscan exact-scan baseline series across the filter matrix.
+#
+# This is the honest incumbent the native index has to beat: every filtered
+# configuration in the matrix (all 4 selectivities x both correlated/
+# uncorrelated modes x both query regimes for correlated filters x 1 and 8
+# connections) gets a companion measurement with `enable_indexscan = off`,
+# `enable_bitmapscan = off`, `enable_seqscan = on` -- verified per point via
+# EXPLAIN (plan_shape must come back `seqscan_forced`, or the point is
+# recorded invalid, never silently blended in). Recall is asserted ==1.0 (an
+# exact scan visits every qualifying row by construction; see
+# runner.py:_assert_exact_recall) rather than just reported.
+#
+# The `exact` system type builds NO index (harness/workloads.py:build_index's
+# kind=="exact" branch) -- every other secondary index is still dropped
+# first, so the table carries zero indexes while this series runs. This is
+# why it is CPU-cheap: no index builds, no ef/probes
+# sweep (a single placeholder sweep_value stands in for "the knob doesn't
+# exist here" so it can reuse run_sweep's grid machinery), only sequential
+# scans.
+#
+# `dataset:` below is BYTE-FOR-BYTE identical to full_1m.yaml's synthetic
+# corpus (same seed, n, dim, n_centers, cluster_sigma, cluster_scale_mix,
+# background_frac, n_queries) and `warmup_queries`/`concurrency` match too --
+# the dataset cache key and every filtered ground-truth cache key
+# (harness/groundtruth.py) are pure functions of these values, so this run
+# hits the SAME cached dataset .npz and the SAME cached brute-force ground
+# truth full_1m.yaml already computed and paid for. No regeneration, no
+# re-computation of ground truth: this config only adds new seqscan
+# measurements on top of data that already exists on disk from the run of
+# record. (If full_1m.yaml's dataset/filter params ever drift, this file
+# must be updated in lockstep or the cache-reuse property silently breaks
+# and this run pays the recompute cost instead -- not incorrect, just slow.)
+#
+# Deliberately excludes `churn:` and `sift1m:` -- this config's only job is
+# the exact-scan companion series across the filter matrix, not a rerun of
+# the full matrix.
+name: baselines_exact
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.001, 0.01, 0.10, 0.50]
+  modes: [correlated, uncorrelated]
+  run:
+    - {selectivity: 0.001, mode: correlated}
+    - {selectivity: 0.001, mode: uncorrelated}
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: uncorrelated}
+    - {selectivity: 0.10, mode: correlated}
+    - {selectivity: 0.10, mode: uncorrelated}
+    - {selectivity: 0.50, mode: correlated}
+    - {selectivity: 0.50, mode: uncorrelated}
+
+systems:
+  - name: exact_seqscan
+    type: exact
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 8]

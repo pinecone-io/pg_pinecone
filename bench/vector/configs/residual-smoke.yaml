@@ -1,0 +1,75 @@
+# 50k-row rehearsal of residual-c1/c2: same code path and GUC axes, tiny data (~7 min). Needs a
+# pg_pinecone build with iterative scan (main 549898b+). Not a result: at 50k the planner picks a seqscan for
+# both systems, and the forced-index companion series then carries the index numbers.
+# Cell: 10% correlated pushed key (5,035 rows) + 0.5% uncorrelated residual (24 combined rows), so
+# `off` under-fills LIMIT 10 and the iterative modes need several batches (or hit the 2000 cap).
+name: residual_smoke
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 1.0
+
+postgres:
+  shared_buffers: 2GB
+  maintenance_work_mem: 1GB
+  min_wal_size: 256MB
+  max_wal_size: 1GB
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.10, mode: correlated, residual: {selectivity: 0.005, mode: uncorrelated}}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    skip_unfiltered: true
+    explain_probe: true
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 200]
+    iterative_scan_values: ["off", "relaxed_order", "strict_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [20000, 100000]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, small_n_threshold: 1000, mode_l_threshold: 0.005,
+                   filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [10, 50]
+    iterative_scan_values: ["off", "relaxed_order", "strict_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [2000, 20000, 100000]
+    scan_fraction_values: [0.0, 0.5]
+
+  # Exact reference (forced seqscan + top-N sort, recall 1.0 by construction): what an index has to beat.
+  - name: exact_seqscan
+    type: exact
+    skip_unfiltered: true
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["pg_pinecone", "pg_pinecone-client"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+
+# CI test builds (`cargo pgrx test --profile ci-test`): the RaBitQ tests build and scan large indexes, hopeless at opt-level 0.
+[profile.ci-test]
+inherits = "dev"
+debug = "line-tables-only"
+
+[profile.ci-test.package.pg_pinecone]
+opt-level = 2

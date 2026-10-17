@@ -1,0 +1,196 @@
+# pgvector FP16 (halfvec) against FP32 hnsw and the native engine at wiki_dpr 1M x 768d: an FP16 expression index over the FP32
+# heap with and without 2x / 5x / 10x FP32 rerank, an FP16 heap (rows rounded on COPY), m16/ef_construction 64 and stronger
+# m32/ef_construction 200 builds, pg_pinecone native from main, forced exact FP32 and FP16 scans. recall@10 and recall@100, latency
+# p50/p95/p99 and QPS at 1, 4 and 16 clients, build time, heap and index size. FP32 recall is the decision metric; every point also
+# reports recall against exact search over FP16-rounded corpus and queries (what rounding alone costs).
+# Same artifact, seed and k-means as configs/local_1m.yaml, and warmup_queries x max(concurrency) is 160 here too, so the dataset key
+# and FP32 ground-truth cache are the same (real_fd937e5862449934); the FP16-rounded truth is its own cache.
+# Native is pg_pinecone from main (0.10: RaBitQ codes, build-time calibration, early stop), not the 0.9.0 tarball; see its systems below.
+# fp32_column_storage: plain keeps the FP32 heap's 3,080-byte vectors in the heap tuple, like the FP16 heap's 1,544-byte ones; pgvector's
+# default would TOAST them, charging the rerank, native and exact FP32 arms a TOAST fetch per vector read that the FP16 heap never pays.
+# Run (from bench/vector; PG_PINECONE_BENCH_PG = a Postgres 17 with pgvector and pg_pinecone from main installed):
+#   env -u PINECONE_API_KEY .venv/bin/python run.py --config configs/halfvec_1m.yaml \
+#       --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-halfvec" -v
+# On the box: phase.sh hv_1m (box/README.md, "Halfvec session"). Wall time: 95 min on the box (2026-10-16, REPORT-halfvec.md):
+# 16 systems (14 builds, 4 of them m32), 531 points, two heap loads.
+name: halfvec_1m
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+# a native arm's cheapest point is its calibrated default, built for recall@10 up to 0.99: above the gate's 0.97, so lifted
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+fp32_column_storage: plain
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+filters:
+  run: []
+
+systems:
+  - name: pgvector_fp32_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: pgvector_fp32_hnsw_m32
+    type: hnsw
+    build_params: {m: 32, ef_construction: 200}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: pgvector_fp16_expression
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: pgvector_fp16_expression_m32
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    build_params: {m: 32, ef_construction: 200}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: pgvector_fp16_rerank_2x
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    rerank_multiplier: 2
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [200, 320, 640, 1000]}
+
+  - name: pgvector_fp16_rerank_5x
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    rerank_multiplier: 5
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [50, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [500, 640, 1000]}
+
+  - name: pgvector_fp16_rerank_5x_m32
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    rerank_multiplier: 5
+    build_params: {m: 32, ef_construction: 200}
+    sweep_param: ef_search
+    sweep_values: [50, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [500, 640, 1000]}
+
+  - name: pgvector_fp16_rerank_10x
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    rerank_multiplier: 10
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [100, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [1000]}
+
+  # Native, one build per target_recall (reloption, 0.5 to 0.999): CREATE INDEX calibrates the default probe count and rescore pool
+  # for recall@10 on held-out table rows (docs/reference.md, "Native engine: calibrated defaults"); the harness stamps
+  # pinecone.index_calibration() into each build. Sweep value 0 = no session override = the calibrated pool. Each build is queried
+  # as a user runs it: at its defaults, plus rescore_multiplier 10 (a 1,000-row pool) at k = 100, the docs' setting for LIMIT 100
+  # (calibration targets recall@10, so its pool is often 100 rows). pinecone.scan_prune (the early stop) stays on and is stamped per
+  # point; record_scan_stats adds rows rescored and lists probed per query.
+  - name: pg_pinecone_native_t090
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.90}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  # The default target, plus a query-time grid over the two scan-time overrides so recall above the calibrated point is reachable:
+  # pinecone.scan_fraction (0 = calibrated; 0.025 to 0.4 = 25 to 400 of the 1,000 auto lists, 0.4 in case calibration lands above 200)
+  # x pinecone.rescore_multiplier (pool = value x 100 rows). Point (0, 0) is the calibrated default.
+  - name: pg_pinecone_native_t095
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.95}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 2, 5, 10, 20]
+    sweep_values_by_k: {100: [0, 10, 20, 50]}
+    scan_fraction_values: [0, 0.025, 0.05, 0.1, 0.2, 0.4]
+    record_scan_stats: true
+
+  - name: pg_pinecone_native_t098
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.98}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  - name: pg_pinecone_native_t099
+    type: pg_pinecone_native
+    build_params: {seed: 42, target_recall: 0.99}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    sweep_values_by_k: {100: [0, 10]}
+    record_scan_stats: true
+
+  - name: fp32_exact_seqscan
+    type: exact
+    k_values: [10]
+    max_queries: 200
+    sweep_param: none
+    sweep_values: [0]
+
+  - name: pgvector_fp16_heap
+    type: hnsw
+    storage_type: halfvec
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: pgvector_fp16_heap_m32
+    type: hnsw
+    storage_type: halfvec
+    index_type: halfvec
+    build_params: {m: 32, ef_construction: 200}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320, 640, 1000]
+    sweep_values_by_k: {100: [100, 160, 320, 640, 1000]}
+
+  - name: fp16_exact_seqscan
+    type: exact
+    storage_type: halfvec
+    index_type: halfvec
+    k_values: [10]
+    max_queries: 200
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4, 16]
+churn: {enabled: false}
+sift1m: {enabled: false}

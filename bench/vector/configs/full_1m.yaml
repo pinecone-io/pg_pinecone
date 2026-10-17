@@ -1,0 +1,111 @@
+# Full-scale run of record, derived from full.yaml.
+#
+# Two deliberate deviations from full.yaml, both budget-driven (subsample, and say so):
+#
+# 1. Churn cycles 10 -> 3. full.yaml's own header comment already flags
+#    VACUUM as the dominant, non-linear cost (pgvector HNSW ambulkdelete
+#    does not scale gently with dead-tuple count/graph size) and says
+#    "budget VACUUM alone at 10s of minutes per cycle" at 1M rows -- 10
+#    cycles could be hours by itself. 3 cycles matches the smoke run's own
+#    cycle count for a like-for-like comparison and still shows a drift
+#    trend, at a fraction of the cost.
+# 2. hnsw ef_search 6 values -> 4 ([10,40,80,160], dropping 20 and 320) and
+#    ivfflat probes 7 -> 5 ([1,2,4,8,16], dropping 32 and 64): the smoke run
+#    already showed the interesting transitions (budget-capped plateau,
+#    planner's index->seqscan flip) live inside this reduced range; the
+#    dropped high values were seqscan/ceiling points carrying no new
+#    information in the smoke run, at real per-point cost multiplied by the
+#    1M-row table's slower per-query latency and full.yaml's 5s
+#    throughput-pass floor (vs smoke's 1.5s).
+#
+# Everything else -- all 4 selectivities x both modes (8 filter combos),
+# both query regimes for correlated filters, concurrency [1,8], SIFT1M --
+# is unchanged from full.yaml: this is the full requested matrix, not a
+# smaller one.
+#
+# Disk-safety addition (this machine has only ~17GB free on a 995GB/98%-full
+# shared disk -- other checkouts and dev Postgres instances live here too):
+# min_wal_size/max_wal_size capped well below the default 4GB/16GB so WAL
+# growth can't threaten the shared disk; does not affect recall/latency
+# measurements, only checkpoint frequency.
+name: full_1m
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: synthetic
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.001, 0.01, 0.10, 0.50]
+  modes: [correlated, uncorrelated]
+  run:
+    - {selectivity: 0.001, mode: correlated}
+    - {selectivity: 0.001, mode: uncorrelated}
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: uncorrelated}
+    - {selectivity: 0.10, mode: correlated}
+    - {selectivity: 0.10, mode: uncorrelated}
+    - {selectivity: 0.50, mode: correlated}
+    - {selectivity: 0.50, mode: uncorrelated}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 40, 80, 160]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [20000, auto]
+  - name: pgvector_ivfflat
+    type: ivfflat
+    build_params: {lists: null}
+    sweep_param: probes
+    sweep_values: [1, 2, 4, 8, 16]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: true
+  cycles: 3
+  reembed_pct: 0.02
+  delete_reinsert_pct: 0.02
+  vacuum_after_each_cycle: true
+  system: {name: pgvector_hnsw, type: hnsw, build_params: {m: 16, ef_construction: 64},
+           sweep_param: ef_search, sweep_values: [80]}
+  sweep_value: 80
+
+sift1m:
+  enabled: true
+  sift_n_queries: 500
+  sift_systems:
+    - name: pgvector_hnsw
+      type: hnsw
+      build_params: {m: 16, ef_construction: 64}
+      sweep_param: ef_search
+      sweep_values: [10, 20, 40, 80, 160, 320]
+    - name: pgvector_ivfflat
+      type: ivfflat
+      build_params: {lists: null}
+      sweep_param: probes
+      sweep_values: [1, 2, 4, 8, 16, 32, 64]

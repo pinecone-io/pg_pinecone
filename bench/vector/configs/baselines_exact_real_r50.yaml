@@ -1,0 +1,65 @@
+# Remainder run for the wiki_dpr forced-seqscan baselines: ONLY the 50%
+# filter cells.
+#
+# WHY A SUBSET CONFIG EXISTS: the full baselines_exact_real run of 2026-09-11
+# 20:40 EDT (started at commit 29316bc, tie-aware recall) completed the
+# unfiltered series and all 0.1%/1%/10% filter cells (22/28 points, every one
+# recall==1.0, plan-verified seqscan_forced), then crashed at the first 50%
+# cell at ~01:04: pg_pinecone-integration commits landed in this tree MID-RUN
+# (00:34/00:39), and multiprocessing spawn workers re-import code from disk --
+# the freshly spawned pool for the 50% sweep returned the new 5-tuple worker
+# results to a parent still running the old 4-tuple unpack. The completed
+# cells are preserved in
+# results/baselines_exact_real_20260912T004017Z.crashed_partial.json (all
+# measured consistently under 29316bc; the recall definition there -- tie-aware
+# -- is identical to HEAD's). The mid-run-code-change guard added after this
+# (runner.run's start/end content-hash stamps; save_results refuses on
+# mismatch) makes this failure mode loud in the future.
+#
+# The composite record for the real-corpus exact baselines is therefore:
+#   0.1%/1%/10% + unfiltered  -> the crashed_partial (29316bc)
+#   50% cells                 -> this run's results file
+# and results/README.md's summary table cites both provenance stamps.
+#
+# `dataset:`/`seed`/`warmup_queries`/`concurrency` are byte-identical to
+# baselines_exact_real.yaml, so this run reuses the same cached artifact,
+# k-means clustering, dataset key, and ground-truth caches. skip_unfiltered:
+# the unfiltered exact series is already on record in the partial (~2h of
+# 9-18s scans; nothing new to learn).
+name: baselines_exact_real_r50
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run:
+    - {selectivity: 0.50, mode: correlated}
+    - {selectivity: 0.50, mode: uncorrelated}
+
+systems:
+  - name: exact_seqscan
+    type: exact
+    sweep_param: none
+    sweep_values: [0]
+    skip_unfiltered: true
+
+concurrency: [1, 8]

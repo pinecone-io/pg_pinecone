@@ -1,0 +1,21 @@
+# Over-RAM (memory-constrained) design target. Real runs belong on Linux
+# (see RUNBOOK.md for why macOS Docker memory limits aren't
+# trustworthy for this workload) -- this compose file is the pinned config
+# for that Linux host, and doubles as a local smoke check.
+#
+# Usage: docker compose -f bench/vector/overram/docker-compose.yml up -d
+services:
+  bench-pg-overram:
+    image: pgvector/pgvector:pg17
+    mem_limit: ${OVERRAM_MEM_LIMIT:-512m}
+    memswap_limit: ${OVERRAM_MEM_LIMIT:-512m}  # no swap headroom beyond the hard limit
+    environment:
+      POSTGRES_PASSWORD: bench
+      POSTGRES_USER: bench
+      POSTGRES_DB: bench
+    volumes:
+      - ./postgresql.overram.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    ports:
+      - "${OVERRAM_PORT:-55432}:5432"
+    shm_size: 128mb
