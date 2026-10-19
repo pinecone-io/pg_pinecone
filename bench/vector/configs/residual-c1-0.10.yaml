@@ -1,0 +1,76 @@
+# Residual-filter cell C1, pg_pinecone 0.10.0
+# residual-c1.yaml trimmed to the rows that matter for 0.10 (the 0.9.0 settings plus the 0.10 default).
+# Same cells, masks, queries and clients as residual-c1.yaml; what changed:
+#   native: iterative_scan {auto (the 0.10 default), off, relaxed_order} x rescore_multiplier {0 (the index's own pool; a pushed key keeps the 0.9.0 pool of 1,000 rows), 10, 50}
+#           at the cap 20000, scan_fraction left at the engine's ramp (the full factorial of residual-c1.yaml with strict_order, caps 2000 / 100000 and scan_fraction 0.5 is not repeated:
+#           scan_fraction 0.5 equals the default at 1,000 lists, strict_order loses everywhere, see REPORT-residual-filter.md)
+#   hnsw:   ef_search 40 (ef 200 is the same within noise), iterative_scan off (the planner's default plan) and relaxed_order at cap 100000 (the forced index when the planner chose a seqscan)
+#   exact_seqscan unchanged.
+name: residual_c1_0.10
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}}
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.01, mode: uncorrelated}}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    skip_unfiltered: true
+    explain_probe: true
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40]
+    iterative_scan_values: ["off", "relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [100000]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 10, 50]
+    iterative_scan_values: ["auto", "off", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0]
+
+  - name: exact_seqscan
+    type: exact
+    skip_unfiltered: true
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

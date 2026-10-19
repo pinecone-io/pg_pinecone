@@ -1,0 +1,102 @@
+# The 0.10.0 extension run: residual-ext.yaml (0.9.0: what reaches recall 0.95 in the 0.3% residual cells and what the
+# shipping default does for the 1% key) with the 0.10 default added: `pn_auto_*` run iterative_scan auto (the shipped default) at the index's own pool
+# (rescore_multiplier 0) and at 50 / 100 / 200 rows x 100; `pn_pool_*` repeat the 0.9.0 rows (relaxed_order, cap 20000, rm 50 / 100 / 200, scan_fraction ramp and 1.0);
+# `pn_model_k1` is the 1% key at the shipping mode_l_threshold 0.03 (exact mode L). One system per key.
+name: residual_ext_0.10
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}}
+    - {selectivity: 0.10, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}}
+
+systems:
+  - name: pn_pool_k1
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [50, 100, 200]
+    iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0, 1.0]
+
+  - name: pn_auto_k1
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 50, 100, 200]
+    iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0]
+
+  - name: pn_pool_k10
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [50, 100, 200]
+    iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0, 1.0]
+
+  - name: pn_auto_k10
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 50, 100, 200]
+    iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0]
+
+  - name: pn_model_k1
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    explain_probe: true
+    build_params: {seed: 42, filter_column: filt_correlated_0010_eq}
+    sweep_param: mode_l_threshold
+    sweep_values: [0.03]
+    iterative_scan_values: ["off"]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

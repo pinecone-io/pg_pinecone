@@ -1,4 +1,4 @@
-# Box for the vector benchmark (pg_pinecone 0.9.0)
+# Box for the vector benchmark (pg_pinecone 0.10.0)
 
 One `r6id.4xlarge` (16 vCPU, 128 GB, 950 GB NVMe instance store) on Ubuntu 24.04 x86_64 in us-east-1 with PGDG Postgres 17 (18 on demand) and pgvector, the
 pg_pinecone release tarball and this harness on the same machine. The scripts in this directory provision it (`provision.sh`, `user-data.sh`,
@@ -73,6 +73,8 @@ $S hv1m $P hv_1m                   # halfvec_1m.yaml: 2.5 to 3 h, an estimate
 ```
 
 `hv_install` builds with `RUSTFLAGS='-C target-cpu=x86-64-v3'`, as the release tarballs are. Nothing else runs beside `hv_1m`. Teardown as below.
+
+
 
 ## Teardown
 

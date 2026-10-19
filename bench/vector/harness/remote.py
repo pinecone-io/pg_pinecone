@@ -29,7 +29,10 @@ REMOTE_KINDS = ("pg_pinecone_remote", "pg_pinecone_remote_topk")
 NAME_MARK = "pg-pinecone-bench-vec"
 API_VERSION = "2026-04"
 CP_HOST = "api.pinecone.io"
-WU_MAX, RU_MAX, USD_MAX = 6_000_000, 1_000_000, 40.0
+# Ceilings of one run; PG_PINECONE_BENCH_{WU,RU,USD}_MAX lower (or raise) them, e.g. $35 for the 0.10.0 box run.
+WU_MAX = int(os.environ.get("PG_PINECONE_BENCH_WU_MAX", 6_000_000))
+RU_MAX = int(os.environ.get("PG_PINECONE_BENCH_RU_MAX", 1_000_000))
+USD_MAX = float(os.environ.get("PG_PINECONE_BENCH_USD_MAX", 40.0))
 USD_PER_WU, USD_PER_RU = 4.50e-6, 18.0e-6
 BENCH_DIR = Path(__file__).resolve().parent.parent
 TRANSPORT = (socket.gaierror, ConnectionError, TimeoutError, ssl.SSLError, http.client.HTTPException, OSError)

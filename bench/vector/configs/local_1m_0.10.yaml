@@ -1,0 +1,91 @@
+# Unfiltered local engines at wiki_dpr 1M x 768d for pg_pinecone 0.10.0: the systems and knob grids of
+# local_1m.yaml (the 0.9.0 box run) for hnsw, ivfflat and the exact scan, and the 0.10.0 native engine with its CALIBRATED defaults.
+# Native (0.10): the build calibrates the probe count and the rescore pool, so `rescore_multiplier` 0 and `scan_fraction` 0.0 are "no override":
+# that row is the shipped default. scan_fraction values are (L - 0.4) / 1000 for L lists (the engine probes ceil(fraction x n_lists)).
+#   pg_pinecone_native       k = 10:  scan_fraction x rescore_multiplier grid (the recall curve: the 0.95 and 0.99 points)
+#   pg_pinecone_native_k100  k = 100: the grid LIMIT 100 needs (pool, lists); rescore_multiplier 10 is the documented setting
+#   pg_pinecone_native_09    the 0.9.0 default parameters on the 0.10.0 engine: 127 lists, pool = rescore_multiplier x 100 (rm 1, 2, 4, 10, 20, 50 as local_1m.yaml)
+# iterative_scan is left at its default (auto). hardness_recall_threshold is 1.0: the 0.9.0 parameters read above 0.97.
+# Same artifact, seed, k-means and ground-truth caches as local_1m.yaml (dataset key real_fd937e5862449934).
+name: local_1m_0.10
+seed: 42
+k: 10
+k_values: [10, 100]
+warmup_queries: 10
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320]
+    sweep_values_by_k: {100: [100, 160, 320, 640]}
+
+  - name: pgvector_ivfflat
+    type: ivfflat
+    build_params: {lists: null}
+    sweep_param: probes
+    sweep_values: [1, 2, 4, 8, 16, 32, 64]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    k_values: [10]
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 3, 10]
+    scan_fraction_values: [0.0, 0.0076, 0.0116, 0.0156, 0.0246, 0.0366, 0.0496, 0.0746, 0.0996]
+
+  - name: pg_pinecone_native_k100
+    type: pg_pinecone_native
+    k_values: [100]
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 3, 5, 10, 20]
+    scan_fraction_values: [0.0, 0.0196, 0.0496, 0.0996]
+
+  - name: pg_pinecone_native_09
+    type: pg_pinecone_native
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [1, 2, 4, 10, 20, 50]
+    scan_fraction_values: [0.1266]
+
+  - name: exact_seqscan
+    type: exact
+    k_values: [10]
+    max_queries: 200
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4, 16]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

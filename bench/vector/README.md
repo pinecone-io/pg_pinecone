@@ -110,6 +110,7 @@ OS-assigned; see `harness/util.free_port`). Pass an absolute path (the socket di
 | `residual-smoke` | 50k x 768d synthetic | iterative-scan grid, one residual cell; rehearsal of `residual-c1/c2` | ~7 min (its header) |
 | `residual-c1`, `residual-c2`, `residual-ext`, `residual-ext2`, `residual-ext-model` | wiki_dpr 1M x 768d | residual-filter benchmark (`REPORT-residual-filter.md`), run from `configs/README-residual.md`; `residual-ext-model` is the mode-L system of `residual-ext` alone | c1, c2: 55 min each on the laptop, 83 and 88 min on the box (ext: 23 min, ext-model: 6 min) |
 | `local_1m` | wiki_dpr 1M x 768d | unfiltered hnsw, ivfflat, `pg_pinecone_native` and forced exact at k = 10 and 100, 1 / 4 / 16 clients (`k_values`, `sweep_values_by_k`, `max_queries`) | box run 2026-10-14 |
+| `local_1m_0.10`, `residual-c1-0.10`, `residual-c2-0.10`, `residual-ext-0.10`, `remote_filtered_keep` | wiki_dpr 1M x 768d | the 0.10.0 versions of the configs above: the native grid is `scan_fraction` x `rescore_multiplier` with the calibrated default as its first point, `iterative_scan` `auto` (the new default) beside `off` and `relaxed_order`, `remote_filtered_keep` is `remote_filtered` without deleting the 1M index | 0.10.0 release run on the box |
 | `smoke-halfvec-native` | 50k x 768d synthetic | rehearsal of `halfvec_1m`: every arm kind in its order (FP32 hnsw, 5x rerank, the four `target_recall` native builds and the 0.95 grid, exact FP32, FP16 heap, exact FP16), k = 10 and 100, 1 / 4 clients; needs pg_pinecone from main | 80 s (verified 2026-10-16) |
 | `halfvec_1m` | wiki_dpr 1M x 768d | FP32 hnsw; FP16 expression hnsw with and without 2x / 5x / 10x FP32 rerank; FP16 heap hnsw; m16 and m32 builds; `pg_pinecone_native` from main at `target_recall` 0.90 / 0.95 / 0.98 / 0.99 (calibrated defaults, plus a probe x pool grid on 0.95); exact FP32 and FP16 scans; k = 10 and 100, 1 / 4 / 16 clients | 95 min on the box (2026-10-16, `REPORT-halfvec.md`) |
 | `remote-smoke`, `remote-smoke-lanes` | 5k x 768d synthetic | rehearsals of the Pinecone lanes against a real index: AM with a filter key and residuals, direct REST, a partitioned AM index, the trigger lane | 3 to 5 min, about 15 to 30k write units each |
@@ -166,7 +167,8 @@ gate and measures. `remote_filtered.yaml` runs on the same `D`. Rehearse any cha
 - The 2026-09 production-build runs on a GCP VM and in Docker, including their Pinecone-backed leg, which never completed (the free tier's
   write quota ran out): their scripts are not in this tree.
 - Absolute latencies: they depend on the machine and on cassert vs release Postgres. The reports say which was used.
-- The over-RAM workload: design and runbook only (`overram/RUNBOOK.md`), it needs a Linux host with Docker.
+- The over-RAM workload's Docker variant (`overram/RUNBOOK.md`) was only smoke-checked locally; the capped runs of `REPORT-overram.md` use
+  `box/overram-pg.sh` on a Linux host.
 - The residual-filter write-up's table scripts and probe logs are not imported.
 
 ## Methodology guarantees
@@ -470,10 +472,10 @@ arms benchmark pgvector; they do not imply pg_pinecone supports a halfvec column
 
 ## Over-RAM workload
 
-Design + runbook only -- see `overram/RUNBOOK.md`. In 2026-09 a local
-Docker smoke check (colima, `pgvector/pgvector:pg17`, `--memory=512m`)
-confirmed the container config works; the real over-RAM experiment needs a
-Linux host.
+`configs/overram_1m.yaml` runs FP32 hnsw, the FP16 expression index and native on an external Postgres 17 that `box/overram-pg.sh` starts as a
+transient systemd unit, so `MemoryMax` (cgroup v2, page cache included) can drop after each uncapped build and lift after the sweep; the result
+is `REPORT-overram.md`. `overram/RUNBOOK.md` is the earlier Docker-based variant: in 2026-09 a local smoke check (macOS Docker VM,
+`pgvector/pgvector:pg17`, `--memory=512m`) confirmed that container config works.
 
 ## Smoke results (historical: 2026-09-09, clean run after the methodology fixes)
 

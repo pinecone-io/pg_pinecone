@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # usage (on the box, detached through ./step.sh): phase.sh <phase>...
-# phases: data prep smoke smoke_default smoke_tuned local_1m c1 c2 ext ext_model
+# phases: tools data prep smoke smoke_default smoke_tuned local_1m c1 c2 ext ext_model
 #         remote_1m_build remote_1m remote_filtered lane_am_build lane_am lane_topk_build lane_topk partition_build partition cleanup
 #         pg18_install   (PostgreSQL 18 and the pg18 tarball next to the 17 of user-data.sh)
 #         hv_install hv_prep hv_smoke hv_1m   (the halfvec session: pg_pinecone built from main, no Pinecone, no key file)
+#         settings   (settings-<label>.json of the run; BOX_LABEL required)
+# local_1m, c1, c2 and ext run the configs/*-0.10.yaml variants; remote_filtered keeps its index (remote_filtered_keep.yaml).
 # No key sits in any environment: remote legs read it from the file $EE_ENV. Finished phases leave $STATE/done-<phase>.
 set -euo pipefail
 source "$HOME/.bench-env"
@@ -18,26 +20,27 @@ run18() { PG_PINECONE_BENCH_PG=/usr/lib/postgresql/18 run "$@"; }
 
 phase() {
     case $1 in
+        tools) "$V/box/tools.sh" ;;
         data)
             PY=$PY "$V/scripts/download-datasets.sh" wikidpr
             (cd "$PG_PINECONE_BENCH_DATA/vector/datasets_cache" && sha256sum wikidpr_shards/wiki_passages_{0..3} wikidpr_768d_1m.npz > "$STATE/data-sha256.txt")
             ;;
         prep)
-            for c in local_1m residual-c1 residual-c2 residual-ext remote_1m remote_filtered remote_partition remote_lanes_am_100k; do
+            for c in local_1m_0.10 residual-c1-0.10 residual-c2-0.10 residual-ext-0.10 remote_1m remote_filtered_keep remote_partition remote_lanes_am_100k; do
                 env -u PINECONE_API_KEY "$PY" run.py --config "configs/$c.yaml" --prep-only -v
             done
             ;;
         smoke) run smoke remote-smoke --allow-dirty ;;
         smoke_default) run smoke remote-smoke --allow-dirty --set postgres/pinecone.worker_naptime_ms=2000 ;;
         smoke_tuned) run smoke remote-smoke --allow-dirty --set postgres/pinecone.worker_naptime_ms=100 ;;
-        local_1m) run local1m local_1m ;;
-        c1) run c1 residual-c1 ;;
-        c2) run c2 residual-c2 ;;
-        ext) run ext residual-ext ;;
+        local_1m) run local1m local_1m_0.10 ;;
+        c1) run c1 residual-c1-0.10 ;;
+        c2) run c2 residual-c2-0.10 ;;
+        ext) run ext residual-ext-0.10 ;;
         ext_model) run extm residual-ext-model ;;
         remote_1m_build) run remote1m remote_1m --stage build ;;
         remote_1m) run remote1m remote_1m --stage measure ;;
-        remote_filtered) run remote1m remote_filtered --stage measure ;;
+        remote_filtered) run remote1m remote_filtered_keep --stage measure ;;
         lane_am_build) run laneam remote_lanes_am_100k --stage build ;;
         lane_am) run laneam remote_lanes_am_100k --stage measure ;;
         lane_topk_build) run lanetopk remote_lanes_topk_100k --stage build ;;
@@ -64,6 +67,7 @@ phase() {
         hv_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/halfvec_1m.yaml --prep-only -v ;;
         hv_smoke) run hvsmoke smoke-halfvec-native ;;
         hv_1m) run hv1m halfvec_1m ;;
+        settings) "$PY" "$V/box/settings.py" "${BOX_LABEL:?set BOX_LABEL}" ;;
         *) echo "unknown phase $1" >&2; return 2 ;;
     esac
 }

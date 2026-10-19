@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # usage (on the box; detached through step.sh): install-pg18.sh
 # PostgreSQL 18 from PGDG next to the 17 of user-data.sh, pgvector for it and the
-# pg_pinecone 0.9.0 pg18 tarball (sha256-checked by install-pg_pinecone.sh), so hnsw and native run on one server.
+# pg_pinecone pg18 tarball (0.10.0 by default, PG_PINECONE_VERSION; sha256-checked by install-pg_pinecone.sh), so hnsw and native run on one server.
 set -euo pipefail
 PG_VER=18.6-1.pgdg24.04+2
 PGVECTOR_VER=0.8.7-1.pgdg24.04+1
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TARBALL=${TARBALL:-$HOME/pg_pinecone-0.9.0-pg18-linux-x86_64.tar.gz}
+TARBALL=${TARBALL:-$HOME/pg_pinecone-${PG_PINECONE_VERSION:-0.10.0}-pg18-linux-x86_64.tar.gz}
 STATE=${STATE:-/data/state}
 
 sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -y install \

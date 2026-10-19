@@ -1,0 +1,66 @@
+# The filtered cells of the Pinecone-backed lane, on the index remote_1m.yaml built (same --data-dir, --stage measure).
+# The index key is filt_correlated_0010_eq (1% of the rows, correlated, 10,170 rows), pushed to Pinecone as metadata and sent as
+# {"filt_correlated_0010_eq": {"$eq": 1}}; the residual column (0.3% / 1%, uncorrelated) cannot be pushed and is applied by the
+# executor, so a selective residual needs pinecone.iterative_scan to fill LIMIT 10 (the residual-c1.yaml cells, same masks).
+# Cells: the key alone (cross-tenant and in-region queries) and the two residual-c1 cells (cross-tenant, as there).
+# iterative_scan off re-queries at topK x4 up to am_max_topk (10,000) and then errors; relaxed_order ends quietly at max_scan_tuples.
+# This copy KEEPS the index (delete_index_after: false) so a later run can reuse the 1M index;
+# phase.sh's `cleanup` phase deletes every pg-pinecone-bench-vec index at the end.
+name: remote_filtered_keep
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 0.97
+min_throughput_seconds: 5.0
+table: pg_pinecone_bench_vec_1m
+
+postgres:
+  shared_preload_libraries: "'pg_pinecone'"
+  pinecone.databases: "'bench'"
+  pinecone.worker_naptime_ms: 100
+  log_min_error_statement: panic
+  shared_buffers: 4GB
+  maintenance_work_mem: 1GB
+
+remote:
+  rest_seconds: 20
+  delete_index_after: false
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}, query_modes: [out_region]}
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.01, mode: uncorrelated}, query_modes: [out_region]}
+
+systems:
+  - name: pg_pinecone_remote
+    type: pg_pinecone_remote
+    skip_unfiltered: true
+    build_params: {filter_column: filt_correlated_0010_eq}
+    sweep_param: am_min_topk
+    sweep_values: [50]
+    record_scan_stats: true
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["off", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [2000, 20000]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false
