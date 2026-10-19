@@ -86,8 +86,9 @@ impl SyncMode {
 
 pub(crate) static SYNC_MODE: GucSetting<SyncMode> = GucSetting::<SyncMode>::new(SyncMode::Async);
 
-/// How many consecutive permanent-class dispatch failures a relid's outbox head row tolerates before `outbox::drain_step` parks
-/// its queue. Transient errors (timeouts, 5xx/429) never count toward this —
+/// How many consecutive permanent-class dispatch failures a relid's outbox head
+/// row tolerates before `outbox::drain_step` parks its queue. Transient errors
+/// (timeouts, 5xx/429) never count toward this —
 /// they always just back off and retry forever.
 pub(crate) static OUTBOX_MAX_ATTEMPTS: GucSetting<i32> = GucSetting::<i32>::new(10);
 
@@ -114,7 +115,7 @@ pub(crate) static WORKER_DATABASES: GucSetting<Option<CString>> =
 /// registration for its full doc; default OFF (auto-REINDEX is opt-in).
 pub(crate) static AUTO_MAINTAIN: GucSetting<bool> = GucSetting::<bool>::new(false);
 
-/// E3: Dedicated Read Node query-time tuning, sent on every remote `/query`
+/// Dedicated Read Node query-time tuning, sent on every remote `/query`
 /// call (both `am::remote_query` and `pinecone.topk`) when set. `0.0` means
 /// "omit the field" — the valid range proper (`0.5..=4.0`) starts above that,
 /// so it can't be expressed as this GUC's own min/max; `backend::drn_query_tuning`
@@ -443,7 +444,7 @@ mod pinecone {
     /// another tracked table still uses it) and clears them. Errors if `tbl`
     /// is detached (`storage = 'detached'`) — demoting
     /// would abandon Pinecone's only copy of the vector column with no
-    /// further sync; run the future `pinecone.attach_storage(tbl)` first.
+    /// further sync; run `pinecone.attach_storage(tbl)` first.
     #[pg_extern]
     fn demote(tbl: PgRelation, drop_remote_index: default!(bool, false)) {
         promote::demote(tbl, drop_remote_index)
@@ -451,9 +452,10 @@ mod pinecone {
 
     /// Repairs `tbl`'s remote namespace from its current local rows:
     /// `deleteAll(namespace)` then backfill. Requires `tbl` to be promoted.
-    /// Errors if `tbl` is detached (`storage = 'detached'`): its local vector column is NULL by definition, so this would
-    /// delete every remote vector and refill nothing — a total wipe of
-    /// Pinecone's only copy; run the future `pinecone.attach_storage(tbl)` first.
+    /// Errors if `tbl` is detached (`storage = 'detached'`): its local vector
+    /// column is NULL by definition, so this would delete every remote vector
+    /// and refill nothing — a total wipe of
+    /// Pinecone's only copy; run `pinecone.attach_storage(tbl)` first.
     /// A table with a partition column empties every namespace of its family: the registered
     /// ones and the orphans Pinecone holds under `<namespace>:` that the registry does not
     /// list (each named in a WARNING; a name no write of the table makes is left alone).
@@ -1076,7 +1078,7 @@ mod pinecone {
     /// `read_capacity` is `NULL` unless a create/describe/adopt call has
     /// populated it (see `registry.rs`'s column comment) — e.g. `'OnDemand'`
     /// or `'Dedicated b1 2x1 Ready'`. `attached` is true for a row registered
-    /// via `pinecone.create_index`/`set_engine`'s attach path (E1).
+    /// via `pinecone.create_index`/`set_engine`'s attach path.
     /// `storage`/`backup_gate`/`detached_at`/`detach_backup_id`/`rpo`/
     /// `read_capacity`/`attached` are appended as the next seven columns
     /// (rather than slotted next to `mode`) so this stays purely additive
@@ -1294,11 +1296,12 @@ mod pinecone {
     }
 
     /// Level-1 storage-engines surface: creates the physical
-    /// index backing `tbl.col` for the requested `engine` — `'pgvector'`
-    /// (a real `USING hnsw` index; pgvector must be installed), `'native'`
-    /// (`USING pinecone WITH (mode = 'local')`), or `'remote'` (`USING pinecone
-    /// WITH (mode = 'remote')`, needs a stored API key) — plus registry
-    /// bookkeeping so `pinecone.set_engine` can find it again later. Minimal v1:
+    /// index backing `tbl.col` for the requested `engine` — `'native'` (the
+    /// default: `USING pinecone WITH (mode = 'local')`), `'pgvector'`
+    /// (a real `USING hnsw` index; pgvector must be installed), or `'remote'`
+    /// (`USING pinecone WITH (mode = 'remote')`, needs a stored API key) — plus, for those two,
+    /// registry bookkeeping so `pinecone.set_engine` can find it again later (a native index is
+    /// found through its metapage). Minimal v1:
     /// one vector column, at most one filter column, no BYOC cloud/region override.
     ///
     /// `filter_column` (engines `'native'` and `'remote'`) makes the index
@@ -1328,7 +1331,7 @@ mod pinecone {
     fn create_index(
         tbl: PgRelation,
         col: &str,
-        engine: default!(&str, "'pgvector'"),
+        engine: default!(&str, "'native'"),
         metric: default!(&str, "'cosine'"),
         index_name: default!(Option<&str>, NULL),
         pinecone_index: default!(Option<&str>, NULL),
@@ -1352,9 +1355,10 @@ mod pinecone {
     }
 
     /// The one-verb engine switch: routes through `pinecone.promote_index`/
-    /// `demote_index` for `'native' <-> 'remote'`; every transition touching
-    /// `'pgvector'` errors clearly naming `pinecone.create_index` instead (not
-    /// supported yet — see `lifecycle.rs`'s module docs). Accepts either the
+    /// `demote_index` for `'native' <-> 'remote'` and replaces the hnsw index
+    /// with a native one for `'pgvector' -> 'native'`; the other transitions
+    /// touching `'pgvector'` error, naming the way round (see `lifecycle.rs`'s
+    /// module docs). Accepts either the
     /// table or its managed index as `idx_or_tbl`. A no-op if already on the
     /// requested engine. `pinecone_index`/`pinecone_namespace`/`attach_unchecked`
     /// are `pinecone.create_index`'s attach parameters (see its own doc) —
@@ -1720,7 +1724,7 @@ mod tests {
         }
     }
 
-    /// Like [`error_message`], plus the DETAIL line (E1's dimension/metric/
+    /// Like [`error_message`], plus the DETAIL line (dimension/metric/
     /// vector_type mismatch guard).
     fn error_message_and_detail(caught: CaughtError) -> (String, Option<String>) {
         match caught {
@@ -1734,7 +1738,7 @@ mod tests {
         }
     }
 
-    /// Like [`error_message`], plus the HINT line (E1's vector-count
+    /// Like [`error_message`], plus the HINT line (vector-count
     /// mismatch guard).
     fn error_message_and_hint(caught: CaughtError) -> (String, Option<String>) {
         match caught {
@@ -2344,7 +2348,7 @@ mod tests {
 
     // ---- pinecone.track / pinecone.untrack / pinecone.topk / pinecone.status ----
     //
-    // Local-mode only (M8): no Pinecone account, no mocks. Every test creates
+    // Local-mode only: no Pinecone account, no mocks. Every test creates
     // its own uniquely-named table and starts by ensuring pgvector is installed.
 
     // `storage`/`backup_gate` plus `detached_at`/
@@ -3372,7 +3376,7 @@ mod tests {
 
     // ---- pinecone.promote / pinecone.demote / pinecone.sync / pinecone.set_api_key ----
     //
-    // M9: remote mode. Every test mocks the control/data planes with
+    // Remote mode. Every test mocks the control/data planes with
     // MockBackend; none talk to real Pinecone.
 
     #[pg_test]
@@ -4628,7 +4632,7 @@ mod tests {
         assert_eq!(status_rows()[0].1, "remote");
     }
 
-    // ---- pinecone._sync_trigger (M9) ----
+    // ---- pinecone._sync_trigger ----
 
     /// Extracts `{id -> vector object}` from an `/vectors/upsert` request body,
     /// so assertions can check membership/fields without depending on batch order.
@@ -6684,8 +6688,8 @@ mod tests {
     }
 
     // ---- async lifecycle drills: async promote e2e, an outage drill, and
-    // backfill restart/mid-flight-DML convergence. The parity half of item
-    // 7 (re-running 0.2's trigger-behavior fixtures through async+drain) is
+    // backfill restart/mid-flight-DML convergence. The parity half
+    // (re-running 0.2's trigger-behavior fixtures through async+drain) is
     // already covered above by the `outbox_*`/`drain_step_fifo_*` tests —
     // every one of them drives the very same `_sync_trigger` enqueue path
     // 'sync' mode does, then dispatches it via `drain_step`/`Scheduler`
@@ -7350,7 +7354,7 @@ mod tests {
         );
     }
 
-    /// 6(b) async `pinecone.sync` coalescing: queued
+    /// Async `pinecone.sync` coalescing: queued
     /// `'upsert'` rows are superseded (deleted) by the fresh
     /// `'delete_all'`+`'backfill'` pair, the registry row flips `'remote' ->
     /// 'promoting'` in the same transaction (so `topk` serves local while
@@ -8602,7 +8606,7 @@ mod tests {
         assert_eq!(outbox_count("promote_keep_sync_mode"), 0);
     }
 
-    // ---- M9 parity suite: local vs remote pinecone.topk ----
+    // ---- Parity suite: local vs remote pinecone.topk ----
     //
     // One fixed fixture (12 vectors, dimension 4, `category` text + `views`
     // int metadata) driven through BOTH modes: a real pgvector table for
@@ -10337,9 +10341,9 @@ mod tests {
         }
     }
 
-    // ---- enqueue contract (plan T1-T8): same transaction, id-keyed rows, no HTTP in the writer ----
+    // ---- enqueue contract: same transaction, id-keyed rows, no HTTP in the writer ----
 
-    /// T1: one INSERT statement enqueues one `doc_upsert` row that carries ids only; the
+    /// One INSERT statement enqueues one `doc_upsert` row that carries ids only; the
     /// writer makes no HTTP call (document text never enters the queue).
     #[pg_test]
     fn doc_outbox_insert_enqueues_one_id_keyed_upsert_row() {
@@ -10372,7 +10376,7 @@ mod tests {
         );
     }
 
-    /// T1: a rolled-back statement leaves nothing behind; inside the subtransaction the row
+    /// A rolled-back statement leaves nothing behind; inside the subtransaction the row
     /// is queued, so the enqueue is part of the writer's own transaction.
     #[pg_test]
     fn doc_outbox_rollback_leaves_no_queue_rows() {
@@ -10392,7 +10396,7 @@ mod tests {
         assert!(fts_heap_ids("fts_t1_rollback").is_empty());
     }
 
-    /// T2: an UPDATE of a declared text column enqueues an upsert for that id.
+    /// An UPDATE of a declared text column enqueues an upsert for that id.
     #[pg_test]
     fn doc_outbox_update_of_declared_text_column_enqueues_upsert() {
         let env = FtsEnv::seeded("fts_t2_text", 2);
@@ -10406,7 +10410,7 @@ mod tests {
         );
     }
 
-    /// T2: an UPDATE that touches no declared column enqueues nothing and sends nothing.
+    /// An UPDATE that touches no declared column enqueues nothing and sends nothing.
     #[pg_test]
     fn doc_outbox_update_of_undeclared_column_enqueues_nothing() {
         let env = FtsEnv::seeded("fts_t2_noop", 2);
@@ -10420,7 +10424,7 @@ mod tests {
         );
     }
 
-    /// T2: rewriting a declared column with the value it already has is not a change.
+    /// Rewriting a declared column with the value it already has is not a change.
     #[pg_test]
     fn doc_outbox_update_to_the_same_value_enqueues_nothing() {
         let env = FtsEnv::seeded("fts_t2_same", 2);
@@ -10428,7 +10432,7 @@ mod tests {
         assert!(env.queue().is_empty(), "queue = {:?}", env.queue());
     }
 
-    /// T2 (decision M2, no `doc_update` in M1): a metadata-only UPDATE is a full upsert of the
+    /// A metadata-only UPDATE is a full upsert of the
     /// whole document, asserted on the request body; `documents/update` is never called.
     #[pg_test]
     fn doc_outbox_metadata_only_update_sends_a_full_upsert_never_an_update() {
@@ -10457,14 +10461,10 @@ mod tests {
             "the unchanged text rides along: {doc}"
         );
         assert_eq!(doc["body"], json!("body 1"));
-        assert_eq!(
-            env.docs.count(Endpoint::Update),
-            0,
-            "no partial updates in M1"
-        );
+        assert_eq!(env.docs.count(Endpoint::Update), 0, "no partial updates");
     }
 
-    /// T3: DELETE enqueues a `doc_delete` for the deleted ids; delivery removes them remotely.
+    /// DELETE enqueues a `doc_delete` for the deleted ids; delivery removes them remotely.
     #[pg_test]
     fn doc_outbox_delete_enqueues_delete_by_id() {
         let env = FtsEnv::seeded("fts_t3_delete", 3);
@@ -10492,7 +10492,7 @@ mod tests {
         assert_eq!(env.remote_ids(), fts_set(&["3"]));
     }
 
-    /// T3: TRUNCATE enqueues a delete-all of the table's namespace and nothing else.
+    /// TRUNCATE enqueues a delete-all of the table's namespace and nothing else.
     #[pg_test]
     fn doc_outbox_truncate_enqueues_delete_all_for_the_namespace() {
         let env = FtsEnv::seeded("fts_t3_truncate", 3);
@@ -10513,7 +10513,7 @@ mod tests {
         assert!(env.remote_ids().is_empty());
     }
 
-    /// T4: changing the primary key deletes the old id and upserts the new one, in one round.
+    /// Changing the primary key deletes the old id and upserts the new one, in one round.
     #[pg_test]
     fn doc_outbox_primary_key_update_deletes_old_id_and_upserts_new_id() {
         let env = FtsEnv::seeded("fts_t4_pk", 1);
@@ -10537,7 +10537,7 @@ mod tests {
         assert!(env.queue().is_empty(), "queue = {:?}", env.queue());
     }
 
-    /// T5: `INSERT ... ON CONFLICT DO UPDATE` fires the INSERT and the UPDATE trigger; each
+    /// `INSERT ... ON CONFLICT DO UPDATE` fires the INSERT and the UPDATE trigger; each
     /// row is delivered exactly once, in a single request.
     #[pg_test]
     fn doc_outbox_on_conflict_do_update_delivers_each_row_once() {
@@ -10610,7 +10610,7 @@ mod tests {
         );
     }
 
-    /// T7: upsert A, delete B, upsert A again, delete A, insert C: one claimed batch becomes
+    /// Upsert A, delete B, upsert A again, delete A, insert C: one claimed batch becomes
     /// one upsert request (C only: A is gone at drain time) and one delete request (A and B).
     #[pg_test]
     fn doc_drain_mixed_ops_in_one_batch_send_one_upsert_and_one_delete() {
@@ -10645,7 +10645,7 @@ mod tests {
         );
     }
 
-    /// T8: a row upserted in one round and deleted before the next is absent remotely.
+    /// A row upserted in one round and deleted before the next is absent remotely.
     #[pg_test]
     fn doc_drain_upsert_then_delete_across_rounds_leaves_the_id_absent() {
         let env = FtsEnv::tracked("fts_t8_across");
@@ -10661,7 +10661,7 @@ mod tests {
         );
     }
 
-    /// T8: delete then re-insert the same id before a drain: the new text wins.
+    /// Delete then re-insert the same id before a drain: the new text wins.
     #[pg_test]
     fn doc_drain_delete_then_reinsert_ends_with_the_new_text() {
         let env = FtsEnv::seeded("fts_t8_reinsert", 1);
@@ -10672,7 +10672,7 @@ mod tests {
         assert_eq!(env.remote_doc("1")["body"], json!("new text"));
     }
 
-    /// T8: TRUNCATE is a barrier: rows inserted after it survive its delete-all, rows inserted
+    /// TRUNCATE is a barrier: rows inserted after it survive its delete-all, rows inserted
     /// before it do not, even though both are materialised at drain time.
     #[pg_test]
     fn doc_drain_truncate_orders_before_later_inserts() {
@@ -10697,7 +10697,7 @@ mod tests {
         );
     }
 
-    /// Extra (decision M2): a NULL declared column is left out of the full upsert, so the
+    /// A NULL declared column is left out of the full upsert, so the
     /// replaced remote document cannot keep stale text or metadata.
     #[pg_test]
     fn doc_drain_null_columns_are_omitted_from_the_document() {
@@ -10740,7 +10740,7 @@ mod tests {
         );
     }
 
-    // ---- identity (plan T9) ----
+    // ---- identity ----
 
     /// Tracks `table` with one declared text column `body` and default analyzers.
     fn fts_track_minimal(table: &str) {
@@ -10752,7 +10752,7 @@ mod tests {
         ));
     }
 
-    /// T9: supported key types give canonical, session-independent ids.
+    /// Supported key types give canonical, session-independent ids.
     #[pg_test]
     fn track_docs_canonical_ids_for_supported_key_types() {
         let (_backend, docs) = fts_mock();
@@ -10816,7 +10816,7 @@ mod tests {
         );
     }
 
-    /// T9: keys that cannot give a canonical id are refused at `track_docs` with a HINT.
+    /// Keys that cannot give a canonical id are refused at `track_docs` with a HINT.
     #[pg_test]
     fn track_docs_refuses_keys_without_a_canonical_id() {
         let (_backend, docs) = fts_mock();
@@ -10866,7 +10866,7 @@ mod tests {
         }
     }
 
-    /// T9: an id over 512 bytes fails the writer's statement at enqueue (bytes, not characters);
+    /// An id over 512 bytes fails the writer's statement at enqueue (bytes, not characters);
     /// 512 bytes is fine, and a refused statement leaves neither row nor queue entry.
     #[pg_test]
     fn doc_outbox_ids_over_512_bytes_fail_at_enqueue() {
@@ -10892,7 +10892,7 @@ mod tests {
         assert_eq!(fts_queue("fts_t9_long").len(), 1, "and no queue entries");
     }
 
-    // ---- schema derivation and attach (plan T11-T13) ----
+    // ---- schema derivation and attach ----
 
     fn fts_track_sql(table: &str, args: &str) -> String {
         format!("SELECT {FTS_TRACK}({}, {args})", fts_rel(table))
@@ -10907,7 +10907,7 @@ mod tests {
         created.body.clone().expect("create call body")
     }
 
-    /// T11: the design's example declaration derives exactly the documented schema: three
+    /// The design's example declaration derives exactly the documented schema: three
     /// full-text fields with filled-in analyzers, one dense field, no metadata fields, and
     /// no local-only options (`on_oversize`) leaking into it.
     #[pg_test]
@@ -10930,7 +10930,7 @@ mod tests {
         );
     }
 
-    /// T11: the dense field's dimension comes from the column, for `vector` and `halfvec`.
+    /// The dense field's dimension comes from the column, for `vector` and `halfvec`.
     #[pg_test]
     fn track_docs_derives_the_dense_field_from_vector_and_halfvec_columns() {
         create_extension_vector();
@@ -10960,7 +10960,7 @@ mod tests {
         }
     }
 
-    /// T11: the metric follows the opclass of an index on the vector column.
+    /// The metric follows the opclass of an index on the vector column.
     #[pg_test]
     fn track_docs_derives_the_metric_from_the_vector_opclass() {
         create_extension_vector();
@@ -10996,7 +10996,7 @@ mod tests {
         }
     }
 
-    /// T12: a declared column whose name Pinecone would reject, or that collides with the
+    /// A declared column whose name Pinecone would reject, or that collides with the
     /// reserved `pg_pinecone_` fields, is refused before any HTTP call.
     #[pg_test]
     fn track_docs_refuses_field_names_pinecone_rejects_or_pg_pinecone_reserves() {
@@ -11038,7 +11038,7 @@ mod tests {
         }
     }
 
-    /// T12: ngram excludes stemming and stop words, and an unknown analyzer option is named;
+    /// Ngram excludes stemming and stop words, and an unknown analyzer option is named;
     /// both are caught locally and the HINT says what to do.
     #[pg_test]
     fn track_docs_refuses_invalid_analyzer_declarations() {
@@ -11072,7 +11072,7 @@ mod tests {
         }
     }
 
-    /// T12: an ngram column that says nothing about stemming does not inherit the stemming and
+    /// An ngram column that says nothing about stemming does not inherit the stemming and
     /// stop-word defaults (they would make the declaration invalid).
     #[pg_test]
     fn track_docs_ngram_column_does_not_inherit_the_stemming_defaults() {
@@ -11146,8 +11146,8 @@ mod tests {
         creates.iter().filter(|c| c.status == 201).count()
     }
 
-    /// T13: an existing index whose field specs match is attached with `adopt_existing => true`
-    /// (decision M8: document indexes have no namespace describe, so an attach is always an
+    /// An existing index whose field specs match is attached with `adopt_existing => true`
+    /// (document indexes have no namespace describe, so an attach is always an
     /// explicit opt-in), not created. Server-applied analyzer keys (`lowercase`, ...) do not
     /// count as a difference. Tracking sends no documents itself; the backfill fills the
     /// existing index with the rows 1 and 2 that exist, the live path with the later row 3.
@@ -11185,7 +11185,7 @@ mod tests {
         );
     }
 
-    /// T13: an analyzer mismatch (here language) is an error that names the field, both
+    /// An analyzer mismatch (here language) is an error that names the field, both
     /// specs and the way out; nothing is registered.
     #[pg_test]
     fn track_docs_refuses_to_attach_an_index_with_a_different_analyzer() {
@@ -11213,9 +11213,9 @@ mod tests {
         );
     }
 
-    /// T13 (decision M8, as settled for M1: document indexes have no namespace describe, so
-    /// emptiness cannot be checked): attaching an existing index needs `adopt_existing => true`
-    /// even when its schema matches, because ids without a row would never join back.
+    /// Document indexes have no namespace describe, so emptiness cannot be checked: attaching
+    /// an existing index needs `adopt_existing => true` even when its schema matches, because
+    /// ids without a row would never join back.
     #[pg_test]
     fn track_docs_refuses_to_attach_an_existing_index_unless_adopt_existing() {
         let (_backend, docs) = fts_mock();
@@ -11282,7 +11282,7 @@ mod tests {
         }
     }
 
-    /// Extra (M7): a schema Pinecone rejects after local validation passed is reported with the
+    /// A schema Pinecone rejects after local validation passed is reported with the
     /// derived schema, nothing stays registered, and the same call works once the cause is fixed.
     #[pg_test]
     fn track_docs_reports_a_schema_pinecone_rejects_and_registers_nothing() {
@@ -11370,9 +11370,9 @@ mod tests {
         fts_assert_untouched("fts_x_jsonb", &docs);
     }
 
-    // ---- size policy and fault isolation (plan T15-T17) ----
+    // ---- size policy and fault isolation ----
 
-    /// T15: an oversized text column is cut under `on_oversize => 'truncate'`, by bytes (a
+    /// An oversized text column is cut under `on_oversize => 'truncate'`, by bytes (a
     /// 150 KB body) and by tokens (66 KB of 2-byte tokens, 22,000 tokens), and the delivered
     /// document says so; a small document in the same batch is untouched.
     #[pg_test]
@@ -11421,7 +11421,7 @@ mod tests {
         );
     }
 
-    /// T15: under `on_oversize => 'error'` the writer's statement fails with the table's
+    /// Under `on_oversize => 'error'` the writer's statement fails with the table's
     /// message, for the same two shapes of oversize; nothing is stored or queued.
     #[pg_test]
     fn doc_outbox_oversized_text_under_the_error_policy_fails_the_statement() {
@@ -11445,7 +11445,7 @@ mod tests {
         assert_eq!(fts_queue("fts_t15_error").len(), 1, "and not queued");
     }
 
-    /// Extra: metadata over 40 KB cannot be sent, so the statement fails.
+    /// Metadata over 40 KB cannot be sent, so the statement fails.
     #[pg_test]
     fn doc_outbox_oversized_metadata_fails_the_statement() {
         let env = FtsEnv::tracked("fts_x_big_meta");
@@ -11457,7 +11457,7 @@ mod tests {
         assert!(env.queue().is_empty(), "queue = {:?}", env.queue());
     }
 
-    /// T16: Pinecone rejects a request because of one document. The worker narrows the request
+    /// Pinecone rejects a request because of one document. The worker narrows the request
     /// down, delivers the others, dead-letters the culprit and never parks the lane (even with
     /// `outbox_max_attempts = 1`, which would park on any permanent failure); `retry_failed_docs`
     /// puts the culprit back in the queue.
@@ -11535,7 +11535,7 @@ mod tests {
         assert_eq!(env.remote_ids(), fts_set(&["1", "2", "3"]));
     }
 
-    /// T17: during a 429 storm writes keep succeeding and queue up, rounds back off without
+    /// During a 429 storm writes keep succeeding and queue up, rounds back off without
     /// counting attempts (429 is transient) and without leaking the key, and once Pinecone
     /// recovers the backlog is delivered in the order it was written.
     #[pg_test]
@@ -11578,7 +11578,7 @@ mod tests {
         assert!(env.queue().is_empty());
     }
 
-    // ---- query translation and results (plan T20-T22) ----
+    // ---- query translation and results ----
 
     /// Rows of `SELECT * FROM pinecone.search_docs(<args>)` as JSON objects, in output order.
     fn fts_search_rows(args: &str) -> Vec<Value> {
@@ -11645,7 +11645,7 @@ mod tests {
             .collect()
     }
 
-    /// T20: a plain query is ONE BM25 `text` clause naming every declared text column (the 2026-07
+    /// A plain query is ONE BM25 `text` clause naming every declared text column (the 2026-07
     /// `fields` array); the request asks for ids and scores only, over the table's own namespace.
     #[pg_test]
     fn search_docs_table_text_query_searches_every_declared_text_column() {
@@ -11666,7 +11666,7 @@ mod tests {
         assert_eq!(search[0].namespace.as_deref(), Some(env.namespace.as_str()));
     }
 
-    /// T20: `field` narrows the search to one column and `k` is the request's `top_k`.
+    /// `field` narrows the search to one column and `k` is the request's `top_k`.
     #[pg_test]
     fn search_docs_table_field_narrows_the_query_to_one_column() {
         let env = FtsEnv::tracked("fts_t20_field");
@@ -11683,7 +11683,7 @@ mod tests {
         assert_eq!(request["top_k"], json!(3));
     }
 
-    /// T20 (decision M9): `must` and `filter` are sent as one `$and` (must first); either one
+    /// `must` and `filter` are sent as one `$and` (must first); either one
     /// alone is sent as it is.
     #[pg_test]
     fn search_docs_table_merges_must_and_filter_with_and() {
@@ -11712,7 +11712,7 @@ mod tests {
         assert_eq!(sent[2]["filter"], filter);
     }
 
-    /// T20: `vector` alone ranks by the dense field named after the vector column.
+    /// `vector` alone ranks by the dense field named after the vector column.
     #[pg_test]
     fn search_docs_table_vector_only_ranks_by_the_dense_field() {
         let env = FtsEnv::tracked("fts_t20_vector");
@@ -11733,7 +11733,7 @@ mod tests {
         assert!(request.get("filter").is_none(), "request = {request}");
     }
 
-    /// T20: `vector` with `must` ranks densely and filters lexically, in one request.
+    /// `vector` with `must` ranks densely and filters lexically, in one request.
     #[pg_test]
     fn search_docs_table_vector_with_must_filters_lexically_and_ranks_densely() {
         let env = FtsEnv::tracked("fts_t20_hybrid");
@@ -11752,7 +11752,7 @@ mod tests {
         assert_eq!(request["filter"], must);
     }
 
-    /// T20 (decision M9): with a `vector`, `query` becomes a `$match_all` requirement on the one
+    /// With a `vector`, `query` becomes a `$match_all` requirement on the one
     /// column named by `field`; without `field` it is refused, before any call.
     #[pg_test]
     fn search_docs_table_vector_with_query_needs_field_and_makes_it_a_match_all() {
@@ -11780,7 +11780,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 0);
     }
 
-    /// T20: `mode => 'query_string'` sends the Lucene text unchanged; mixing it with a vector
+    /// `mode => 'query_string'` sends the Lucene text unchanged; mixing it with a vector
     /// would mix scoring types in one request and is refused.
     #[pg_test]
     fn search_docs_table_query_string_mode_passes_lucene_syntax_through() {
@@ -11813,7 +11813,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 0);
     }
 
-    /// T20: `k = 0` makes no call; `k` outside 0..=10,000 is refused before any call; 10,000 is allowed.
+    /// `k = 0` makes no call; `k` outside 0..=10,000 is refused before any call; 10,000 is allowed.
     #[pg_test]
     fn search_docs_table_k_zero_makes_no_call_and_k_is_validated() {
         let env = FtsEnv::tracked("fts_t20_k");
@@ -11839,7 +11839,7 @@ mod tests {
         assert_eq!(fts_last_search(&env.docs)["top_k"], json!(10_000));
     }
 
-    /// T20: searching a table that is not tracked is an error that points at both ways out.
+    /// Searching a table that is not tracked is an error that points at both ways out.
     #[pg_test]
     fn search_docs_table_untracked_table_is_an_error() {
         let (_backend, docs) = fts_mock();
@@ -11859,7 +11859,7 @@ mod tests {
         assert!(docs.calls().is_empty(), "calls = {:?}", docs.calls());
     }
 
-    /// Extra (M7): a query vector of the wrong size is refused with both sizes, before any call.
+    /// A query vector of the wrong size is refused with both sizes, before any call.
     #[pg_test]
     fn search_docs_table_vector_dimension_mismatch_is_refused() {
         let env = FtsEnv::tracked("fts_t20_dimension");
@@ -11873,7 +11873,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 0);
     }
 
-    /// Extra (M7): a 4xx on search says Pinecone rejected the query and names the escape hatch.
+    /// A 4xx on search says Pinecone rejected the query and names the escape hatch.
     #[pg_test]
     fn search_docs_table_surfaces_a_rejected_query_with_a_hint() {
         let env = FtsEnv::tracked("fts_t20_rejected");
@@ -11895,7 +11895,7 @@ mod tests {
         fts_assert_hint(&error, "query_string");
     }
 
-    /// Extra (M7): 429 says which kind it is (monthly quota or request rate) and 5xx is transient,
+    /// 429 says which kind it is (monthly quota or request rate) and 5xx is transient,
     /// each with its own SQLSTATE and HINT.
     #[pg_test]
     fn search_docs_table_errors_are_classified_by_cause() {
@@ -11931,7 +11931,7 @@ mod tests {
         }
     }
 
-    /// T21: the function returns `(id, score, rank)` and nothing else; a row deleted locally but
+    /// The function returns `(id, score, rank)` and nothing else; a row deleted locally but
     /// still returned by Pinecone drops out of the join.
     #[pg_test]
     fn search_docs_table_returns_ids_scores_ranks_and_the_join_drops_deleted_rows() {
@@ -11979,8 +11979,8 @@ mod tests {
         );
     }
 
-    /// Extra (decision M5, plan T20): the name `search_docs` is the table-bound function alone,
-    /// declared `ROWS 100`; the old pass-through lives on as `search_doc_index`.
+    /// The name `search_docs` is the table-bound function alone, declared `ROWS 100`; the old
+    /// pass-through lives on as `search_doc_index`.
     #[pg_test]
     fn search_docs_name_is_table_bound_and_the_pass_through_is_renamed() {
         let bare = |name: &str| name.trim_start_matches("pinecone.").to_string();
@@ -12043,7 +12043,7 @@ mod tests {
             .0
     }
 
-    /// T22: a role without SELECT on the table cannot search it, and Pinecone is never asked;
+    /// A role without SELECT on the table cannot search it, and Pinecone is never asked;
     /// with SELECT the same call works.
     #[pg_test]
     fn search_docs_table_requires_select_on_the_table() {
@@ -12072,7 +12072,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "with SELECT the search works: {rows:?}");
     }
 
-    /// T22: under row-level security the caller's join only sees rows the caller may see; the
+    /// Under row-level security the caller's join only sees rows the caller may see; the
     /// function itself returns what Pinecone matched (documented caveat, not asserted).
     #[pg_test]
     fn search_docs_table_join_hides_rows_the_caller_cannot_see_under_rls() {
@@ -12113,7 +12113,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 1);
     }
 
-    /// Extra (M7): every argument problem is refused before Pinecone is asked, with its SQLSTATE.
+    /// Every argument problem is refused before Pinecone is asked, with its SQLSTATE.
     #[pg_test]
     fn search_docs_table_refuses_bad_arguments_before_any_call() {
         let env = FtsEnv::tracked("fts_x_args");
@@ -12212,7 +12212,7 @@ mod tests {
         );
     }
 
-    /// Extra: `vector` on a table that declared no vector column says how to get one.
+    /// `vector` on a table that declared no vector column says how to get one.
     #[pg_test]
     fn search_docs_table_vector_needs_a_declared_vector_column() {
         let env = FtsEnv::untracked("fts_x_novec");
@@ -12227,7 +12227,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 0);
     }
 
-    /// Extra (M5, typing table): a `filter` value for a timestamp column becomes epoch seconds like
+    /// A `filter` value for a timestamp column becomes epoch seconds like
     /// the documents' own values; numbers and the other types pass through checked against the column.
     #[pg_test]
     fn search_docs_table_types_filter_values_like_the_documents() {
@@ -12258,7 +12258,7 @@ mod tests {
         assert_eq!(parts[3], filter["$and"][3]);
     }
 
-    /// Extra (M5): a `timestamp` without time zone and a `date` count as UTC, whatever the session
+    /// A `timestamp` without time zone and a `date` count as UTC, whatever the session
     /// time zone says; `timestamptz` strings without an offset follow the session time zone.
     #[pg_test]
     fn search_docs_table_filter_epoch_ignores_the_zone_except_for_timestamptz() {
@@ -12289,7 +12289,7 @@ mod tests {
         );
     }
 
-    /// Extra (M7): the HINT of a rejected search names the transport-level way out for 5xx, and a
+    /// The HINT of a rejected search names the transport-level way out for 5xx, and a
     /// timeout or an unreachable host gets the same SQLSTATE and way out.
     #[pg_test]
     fn search_docs_table_outages_point_at_the_local_engine() {
@@ -12312,14 +12312,14 @@ mod tests {
         fts_assert_hint(&error, "engine => 'local'");
     }
 
-    // ---- local engine (plan T23): Postgres full-text search through the same statement ----
+    // ---- local engine: Postgres full-text search through the same statement ----
 
     fn fts_row_ids(rows: &[Value]) -> Vec<String> {
         let ids = rows.iter().filter_map(|row| row["id"].as_str());
         ids.map(str::to_string).collect()
     }
 
-    /// T23: `engine => 'local'` ranks the declared columns by `ts_rank_cd` straight from the
+    /// `engine => 'local'` ranks the declared columns by `ts_rank_cd` straight from the
     /// heap (rows not synced yet are found), never calls Pinecone, ignores undeclared columns,
     /// and `track_docs` created no index.
     #[pg_test]
@@ -12366,7 +12366,7 @@ mod tests {
         );
     }
 
-    /// T23: what the local engine cannot do is an error, not a silently different search.
+    /// What the local engine cannot do is an error, not a silently different search.
     #[pg_test]
     fn search_docs_local_engine_refuses_what_it_cannot_do() {
         let env = FtsEnv::tracked("fts_t23_refuse");
@@ -12936,9 +12936,9 @@ mod tests {
         fts_run(&format!("DROP ROLE {role}"));
     }
 
-    // ---- DDL guard and lifecycle (plan T25-T26) ----
+    // ---- DDL guard and lifecycle ----
 
-    /// T25 (decision M4): DROP, RENAME and TYPE of a declared column, the id column or the
+    /// DROP, RENAME and TYPE of a declared column, the id column or the
     /// vector column are refused with 2BP01 and the way out; the table keeps working.
     #[pg_test]
     fn track_docs_ddl_guard_refuses_changes_to_declared_columns() {
@@ -13010,7 +13010,7 @@ mod tests {
         );
     }
 
-    /// T25 (decision M4): a tracked table cannot be dropped until it is untracked.
+    /// A tracked table cannot be dropped until it is untracked.
     #[pg_test]
     fn track_docs_ddl_guard_refuses_dropping_a_tracked_table() {
         let env = FtsEnv::tracked("fts_t25_drop");
@@ -13031,7 +13031,7 @@ mod tests {
         env.run(&format!("DROP TABLE {}", env.table));
     }
 
-    /// T25: `untrack_docs` leaves the remote index alone by default and deletes it with `drop_index`.
+    /// `untrack_docs` leaves the remote index alone by default and deletes it with `drop_index`.
     #[pg_test]
     fn untrack_docs_drops_the_remote_index_only_when_asked() {
         let env = FtsEnv::tracked("fts_t25_untrack");
@@ -13129,7 +13129,7 @@ mod tests {
         }
     }
 
-    /// T25: `untrack_docs` removes the docs triggers, queue and registry row and nothing of the
+    /// `untrack_docs` removes the docs triggers, queue and registry row and nothing of the
     /// vector lane's, on a table that is in both registries.
     #[pg_test]
     fn untrack_docs_removes_only_the_docs_triggers_and_registry_row() {
@@ -13175,7 +13175,7 @@ mod tests {
         );
     }
 
-    /// T25 (decision M13): a parked docs lane does not stall vector sync on the same table.
+    /// A parked docs lane does not stall vector sync on the same table.
     #[pg_test]
     fn docs_lane_parked_does_not_stall_vector_sync_on_the_same_table() {
         let env = fts_dual_env("fts_t25_docs_parked");
@@ -13205,7 +13205,7 @@ mod tests {
         assert_eq!(fts_queue(t).len(), 1, "the parked docs queue keeps its row");
     }
 
-    /// T25 (decision M13): a parked vector lane does not stall document sync on the same table.
+    /// A parked vector lane does not stall document sync on the same table.
     #[pg_test]
     fn vector_lane_parked_does_not_stall_docs_sync_on_the_same_table() {
         let env = fts_dual_env("fts_t25_vector_parked");
@@ -13231,9 +13231,9 @@ mod tests {
         );
     }
 
-    // ---- refusals from the error table (plan T9, T12, M5, M6) ----
+    // ---- refusals from the error table ----
 
-    /// Extra: a declared column that does not exist, or is not a text type, is refused by name.
+    /// A declared column that does not exist, or is not a text type, is refused by name.
     #[pg_test]
     fn track_docs_refuses_unknown_and_mistyped_text_columns() {
         let (_backend, docs) = fts_mock();
@@ -13258,7 +13258,7 @@ mod tests {
         }
     }
 
-    /// Extra (decision M6): partitioned tables and tables with inheritance children are refused,
+    /// Partitioned tables and tables with inheritance children are refused,
     /// because statement triggers do not see writes to partitions or children.
     #[pg_test]
     fn track_docs_refuses_partitioned_and_inherited_tables() {
@@ -13280,7 +13280,7 @@ mod tests {
         }
     }
 
-    /// Extra (M5, m17): only the owner may track, checked before any HTTP call; a table that is
+    /// Only the owner may track, checked before any HTTP call; a table that is
     /// already tracked cannot be tracked again.
     #[pg_test]
     fn track_docs_requires_ownership_and_refuses_double_tracking() {
@@ -13315,7 +13315,7 @@ mod tests {
         fts_assert_unregistered("fts_x_not_mine");
     }
 
-    /// Extra: without a primary key the id can be a NOT NULL UNIQUE column named by
+    /// Without a primary key the id can be a NOT NULL UNIQUE column named by
     /// `id_column` (the escape hatch the "no primary key" HINT offers); changing its value is a
     /// delete of the old id and an upsert of the new one; a column that may be NULL or repeat is refused.
     #[pg_test]
@@ -13349,7 +13349,7 @@ mod tests {
         );
     }
 
-    /// Extra (decision M8): the dense field is part of the attach comparison too; a different
+    /// The dense field is part of the attach comparison too; a different
     /// dimension would only fail later, as a 400 per document.
     #[pg_test]
     fn track_docs_refuses_to_attach_an_index_with_a_different_dense_dimension() {
@@ -13418,7 +13418,7 @@ mod tests {
         assert_eq!(docs.remote_ids("fts_x_schema.items"), fts_set(&["1"]));
     }
 
-    /// Extra: a statement of 2,500 rows (about 2.6 MB of documents) is
+    /// A statement of 2,500 rows (about 2.6 MB of documents) is
     /// delivered in requests Pinecone accepts: at most 1,000 documents and 2 MB each.
     #[pg_test]
     fn doc_drain_packs_requests_within_pinecone_limits() {
@@ -13451,7 +13451,7 @@ mod tests {
         assert_eq!(env.remote_ids().len(), 2500);
     }
 
-    // ---- status() and flush_docs (plan T27) ----
+    // ---- status() and flush_docs ----
 
     fn fts_flush(table: &str, timeout_ms: i32) -> (bool, Vec<String>) {
         let sql = format!("SELECT {FTS_FLUSH}({}, {timeout_ms})", fts_rel(table));
@@ -13464,7 +13464,7 @@ mod tests {
         )
     }
 
-    /// T27: `flush_docs` on a drained lane is true at once.
+    /// `flush_docs` on a drained lane is true at once.
     #[pg_test]
     fn flush_docs_returns_true_once_the_lane_is_drained() {
         let env = FtsEnv::seeded("fts_t27_flush_ok", 2);
@@ -13472,7 +13472,7 @@ mod tests {
         assert!(flushed, "warnings = {warnings:?}");
     }
 
-    /// T27: with a backlog and no launcher nothing will ever drain it, so `flush_docs` says so at
+    /// With a backlog and no launcher nothing will ever drain it, so `flush_docs` says so at
     /// once instead of waiting out the timeout, and points at `status()`.
     #[pg_test]
     fn flush_docs_with_a_backlog_and_no_launcher_returns_false_immediately() {
@@ -13493,7 +13493,7 @@ mod tests {
         assert_eq!(env.queue().len(), 1, "flush never drains anything itself");
     }
 
-    /// T27 (decision M3): with a live launcher but a lane that cannot deliver, `flush_docs` waits
+    /// With a live launcher but a lane that cannot deliver, `flush_docs` waits
     /// out its timeout, returns false and the WARNING points at `status()`.
     #[pg_test]
     fn flush_docs_times_out_false_and_the_warning_points_at_status() {
@@ -13518,7 +13518,7 @@ mod tests {
         assert!(timed_out, "warnings = {warnings:?}");
     }
 
-    /// T27: a parked lane will not drain by itself, so `flush_docs` returns false at once.
+    /// A parked lane will not drain by itself, so `flush_docs` returns false at once.
     #[pg_test]
     fn flush_docs_parked_returns_false_immediately() {
         let _serialize = TestSerializeGuard::acquire();
@@ -13790,7 +13790,7 @@ mod tests {
     }
 
     /// The queue reveals ids and error texts of the table's rows, so reading it takes SELECT on
-    /// the table (decision M5); requeueing dead letters is the owner's (no role holds a grant
+    /// the table; requeueing dead letters is the owner's (no role holds a grant
     /// on the queue to change that).
     #[pg_test]
     fn failed_docs_and_flush_require_select_and_retry_requires_ownership() {
@@ -13883,7 +13883,7 @@ mod tests {
         assert!(env.docs.calls().is_empty(), "nothing was sent");
     }
 
-    // ---- backfill (plan T18-T19), the repair verbs and the circuit breaker ----
+    // ---- backfill, the repair verbs and the circuit breaker ----
 
     const FTS_BACKFILL: &str = "pinecone.backfill_docs";
     const FTS_UNPARK: &str = "pinecone.unpark_docs";
@@ -13959,7 +13959,7 @@ mod tests {
         docs.set_latency(Endpoint::Upsert, std::time::Duration::from_millis(ms));
     }
 
-    /// T18: a round ends when its budget is spent, not at the end of a 10,000-row table, and a
+    /// A round ends when its budget is spent, not at the end of a 10,000-row table, and a
     /// round with budget left runs chunks back to back. With 300 ms per request and a 1.5 s
     /// budget at most five chunks fit (a request cannot answer faster than the mock's latency);
     /// under a 60 s budget the rest of the table goes out in one round. Both bounds hold on any
@@ -13997,7 +13997,7 @@ mod tests {
         assert_eq!(env.round(), "idle");
     }
 
-    /// T18: a chunk that fails mid-backfill leaves the persisted cursor behind the last
+    /// A chunk that fails mid-backfill leaves the persisted cursor behind the last
     /// delivered chunk; later rounds resume there. Nothing is skipped and nothing delivered is
     /// sent again (the failed chunk was never accepted, so it goes out once, later). Changed from
     /// the archived test: the client now retries a 5xx itself, so one failed call (`fail_nth`)
@@ -14051,7 +14051,7 @@ mod tests {
         assert!(fts_backfill_jobs(&env.table).is_empty());
     }
 
-    /// T18: a live UPDATE of a row the backfill has not reached yet is delivered before the
+    /// A live UPDATE of a row the backfill has not reached yet is delivered before the
     /// backfill continues (live rows first) and is never overwritten by older text. The first
     /// round (300 ms budget, 100 ms per request) runs three chunks at most.
     #[pg_test]
@@ -14104,7 +14104,7 @@ mod tests {
         );
     }
 
-    /// T19: rows deleted while the backfill is running are not sent afterwards, and rows it
+    /// Rows deleted while the backfill is running are not sent afterwards, and rows it
     /// had already sent are removed: the remote id set ends equal to the table's. The first
     /// round (300 ms budget, 100 ms per request) runs three chunks at most.
     #[pg_test]
@@ -14133,7 +14133,7 @@ mod tests {
         );
     }
 
-    /// Extra: the round budget GUC exists with its documented default.
+    /// The round budget GUC exists with its documented default.
     #[pg_test]
     fn guc_backfill_round_ms_defaults_to_one_second() {
         let value = Spi::get_one::<String>(&format!("SHOW {FTS_GUC_ROUND_MS}"));
@@ -14164,7 +14164,7 @@ mod tests {
         fts_set_round_budget(60_000);
     }
 
-    /// Extra (decision M12): `backfill_docs` rebuilds a lost remote index from the table and
+    /// `backfill_docs` rebuilds a lost remote index from the table and
     /// refuses to queue behind a parked lane.
     #[pg_test]
     fn backfill_docs_rebuilds_a_lost_index_and_refuses_a_parked_lane() {
@@ -14934,7 +14934,7 @@ mod tests {
             .unwrap_or_else(|| panic!("pinecone.status() has no row for {table}"))
     }
 
-    /// T27: the document columns of `status()` report delivery: backlog and its age, the last
+    /// The document columns of `status()` report delivery: backlog and its age, the last
     /// delivery, backfill progress, dead letters and the queue state. Copied from the archive;
     /// the finished backfill is asserted as 5 of 5 (the registry sets total = done), and the
     /// launcher guard is taken at the start because `NO WORKER` and `active` read the cluster's
@@ -15023,7 +15023,7 @@ mod tests {
         row.get(column) == Some(&Value::Null)
     }
 
-    /// T16: a document Pinecone refuses is a dead letter. `docs_failed` counts it, it is not
+    /// A document Pinecone refuses is a dead letter. `docs_failed` counts it, it is not
     /// backlog, the lane stays `idle` (never `parked`), and `retry_failed_docs` moves it from
     /// the failed count back to the backlog.
     #[pg_test]
@@ -15058,7 +15058,7 @@ mod tests {
         assert_eq!(status["docs_backlog"], json!(1), "requeued: {status}");
     }
 
-    /// T17: a 429 storm is `backoff` (the rows stay, no attempt is counted) and the error shows
+    /// A 429 storm is `backoff` (the rows stay, no attempt is counted) and the error shows
     /// in `last_error`; a rejected key parks the lane (`parked`, with the reason); after
     /// `unpark_docs` and a healed mock the queue drains to `idle` with no error left.
     #[pg_test]
@@ -15411,7 +15411,7 @@ mod tests {
         // `_index_guard` drops here (and on any earlier panic via unwind), deleting the real index.
     }
 
-    // ---- review fixes: privilege model (M1), worker isolation (M2), lock discipline (M3) ----
+    // ---- review fixes: privilege model, worker isolation, lock discipline ----
 
     /// Statements a role without any grant on the registry or the queue must be refused.
     fn fts_direct_access_statements(rel: &str) -> Vec<String> {
@@ -15426,7 +15426,7 @@ mod tests {
         ]
     }
 
-    /// M1: every verb works for the role that may call it with nothing but schema usage and the
+    /// Every verb works for the role that may call it with nothing but schema usage and the
     /// table's own privileges: no grant on the registry, the queue or the internal functions.
     #[pg_test]
     fn docs_verbs_need_no_grant_on_the_registry_or_the_queue() {
@@ -15477,7 +15477,7 @@ mod tests {
         assert_eq!(docs.count(Endpoint::IndexDelete), 1);
     }
 
-    /// M1: a second owner cannot enqueue a `doc_delete_all` for another table, touch its registry
+    /// A second owner cannot enqueue a `doc_delete_all` for another table, touch its registry
     /// row, or run a verb on it: the review's namespace-wipe and global-DDL-denial scenarios.
     #[pg_test]
     fn docs_a_second_owner_cannot_touch_another_tables_registry_or_queue() {
@@ -15538,7 +15538,7 @@ mod tests {
         assert_eq!(columns.expect("a row").len(), 3, "the row is untouched");
     }
 
-    /// M1/m2: the DDL guard looks only at the tables a statement alters. A registry row that no
+    /// The DDL guard looks only at the tables a statement alters. A registry row that no
     /// longer matches its table (here: a bogus declared column) does not block `ALTER TABLE` on
     /// any other table; the drifted table itself is still guarded.
     #[pg_test]
@@ -15562,7 +15562,7 @@ mod tests {
         );
     }
 
-    /// M1: readers need nothing beyond SELECT on the table (and schema usage): the registry is
+    /// Readers need nothing beyond SELECT on the table (and schema usage): the registry is
     /// read for them, and every verb that changes anything stays with the owner.
     #[pg_test]
     fn docs_readers_need_only_select_on_the_table() {
@@ -15632,7 +15632,7 @@ mod tests {
     }
 
     /// A statement on the queue that raises for one table (the safety net of a step: the table's
-    /// own rows are read where a poison row is found, see M1 below).
+    /// own rows are read where a poison row is found).
     fn fts_fail_queue_statements(table: &str, event: &str, condition: &str) {
         fts_run(&format!(
             "CREATE FUNCTION fts_boom_{table}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
@@ -15645,7 +15645,7 @@ mod tests {
         ));
     }
 
-    /// M2: a SQL error in the queue statements of one table's step is that lane's failure: the
+    /// A SQL error in the queue statements of one table's step is that lane's failure: the
     /// message lands on the queue row, the lane parks after `outbox_max_attempts` rounds, and
     /// another table drains in the same rounds.
     #[pg_test]
@@ -15691,7 +15691,7 @@ mod tests {
         );
     }
 
-    /// M2: a backfill chunk is isolated the same way: the SQL error becomes the job's failure.
+    /// A backfill chunk is isolated the same way: the SQL error becomes the job's failure.
     #[pg_test]
     fn doc_backfill_chunk_survives_a_sql_error_and_parks_the_lane() {
         let (_backend, _docs) = fts_mock();
@@ -15745,7 +15745,7 @@ mod tests {
         panic!("could not release the share locks on {relid}");
     }
 
-    /// M3: the worker holds no lock on the user table while it talks to Pinecone, however it got
+    /// The worker holds no lock on the user table while it talks to Pinecone, however it got
     /// there (reading the rows takes a lock that lives to the end of the transaction unless it is
     /// given back): a DDL statement queued behind that lock blocks every reader of the table.
     #[pg_test]
@@ -15775,7 +15775,7 @@ mod tests {
         assert_eq!(env.remote_ids(), fts_set(&["1", "2", "3", "4"]));
     }
 
-    /// M3: a batch stops when its time is spent (after at least one slice), keeps what it
+    /// A batch stops when its time is spent (after at least one slice), keeps what it
     /// delivered and leaves the rest queued, so a rate-limited batch cannot hold the lane, its
     /// claimed rows and an `untrack_docs` for minutes.
     #[pg_test]
@@ -15799,7 +15799,7 @@ mod tests {
         assert_eq!(env.remote_ids(), fts_id_range(1, 2_500));
     }
 
-    /// M3: a table that DDL has locked ends the batch where it is, without losing or resending
+    /// A table that DDL has locked ends the batch where it is, without losing or resending
     /// anything, and is simply tried again next round.
     #[pg_test]
     fn doc_drain_a_busy_table_ends_the_batch_without_losing_anything() {
@@ -15835,7 +15835,7 @@ mod tests {
         assert_eq!(env.remote_ids(), fts_id_range(1, 2_500));
     }
 
-    /// M3: a 429 storm ends the batch at the first request that cannot get through; nothing
+    /// A 429 storm ends the batch at the first request that cannot get through; nothing
     /// stays locked, so `untrack_docs` goes through at once and DDL on the table is not held up.
     #[pg_test]
     fn doc_drain_a_429_storm_leaves_nothing_locked_and_untrack_goes_through() {
@@ -15882,7 +15882,7 @@ mod tests {
         }
     }
 
-    /// M3 (PR5 addendum): the worker never waits for the lane lock of a table: a user session in
+    /// The worker never waits for the lane lock of a table: a user session in
     /// `backfill_docs` or `untrack_docs` makes the worker move on to the next table.
     #[pg_test]
     fn doc_drain_and_backfill_skip_a_lane_another_session_holds() {
@@ -15909,7 +15909,7 @@ mod tests {
         );
     }
 
-    /// M3/m10: `untrack_docs` says why it waits when a drain holds the lane, then waits.
+    /// `untrack_docs` says why it waits when a drain holds the lane, then waits.
     #[pg_test]
     fn untrack_docs_says_which_drain_it_waits_for() {
         let env = FtsEnv::untracked("fts_m3_wait");
@@ -15929,7 +15929,7 @@ mod tests {
         fts_assert_registered(&env.table);
     }
 
-    /// M3 (PR5 addendum): a table written to all the time still backfills: a queued live row
+    /// A table written to all the time still backfills: a queued live row
     /// does not hold the job back, only a queued `doc_delete_all` does (the wipe must reach
     /// Pinecone before any chunk), and a chunk of such a table goes out.
     #[pg_test]
@@ -17287,8 +17287,8 @@ mod tests {
 
     /// `index_name`'s current metapage `mode` — reads it directly (opening
     /// the index relation by oid), bypassing any behavioral proxy (e.g. an
-    /// INSERT's error text), for engine-stickiness tests (`am::resolve_mode`) that need to know EXACTLY which engine an index is
-    /// on right now.
+    /// INSERT's error text), for engine-stickiness tests (`am::resolve_mode`)
+    /// that need to know EXACTLY which engine an index is on right now.
     fn index_mode(index_name: &str) -> crate::local::metapage::Mode {
         let oid = Spi::get_one::<pg_sys::Oid>(&format!("SELECT '{index_name}'::regclass::oid"))
             .expect("index oid query")
@@ -18493,7 +18493,7 @@ mod tests {
         // registry re-read: a Postgres error raised *inside a utility
         // command* leaves this test's single caught-not-subtransactioned
         // transaction unable to see its own earlier catalog writes (same
-        // pgrx-tests limitation family as the ignored VACUUM gate-opener),
+        // pgrx-tests limitation family as the ignored real-VACUUM test),
         // so re-querying `pinecone.tables` here fails on the fixture table's
         // own name resolution, not on anything this fix governs.
         let message = outcome.expect_err("expected a one-index-per-table error");
@@ -18910,7 +18910,7 @@ mod tests {
     // ---- ambulkdelete ----
 
     /// **Real ambulkdelete proof.** Empirically verifies
-    /// the claim the early spike never exercised (its remote was a flat file,
+    /// the claim an early prototype never exercised (its remote was a flat file,
     /// no SPI/HTTP involved): that `pg_pinecone`'s `ambulkdelete` — which runs
     /// `Spi::run`/`Spi::connect` (registry lookup, outbox purge) *and* real
     /// blocking HTTP (`Client::list_vector_ids`/`delete_vectors`) — actually
@@ -19264,8 +19264,8 @@ mod tests {
         }
     }
 
-    /// **Unit-level counterpart to the ignored real-`VACUUM` gate-opener
-    /// test above**: calls
+    /// **Unit-level counterpart to the ignored real-`VACUUM` test above**:
+    /// calls
     /// `am::ambulkdelete_core` directly with a fake `is_dead` predicate,
     /// closing exactly the gap that test's own rustdoc documents it cannot
     /// exercise end-to-end (a `#[pg_test]`'s enclosing transaction pins a
@@ -20939,8 +20939,9 @@ mod tests {
     /// Engine stickiness (`am::resolve_mode`,
     /// `pinecone._am_engine`): a `REINDEX` on a `mode='auto'` index must NEVER
     /// silently switch engines just because the auto-heuristic's inputs
-    /// drifted in the meantime — "engine switch = one explicit verb". Builds a fresh auto-resolved-LOCAL index with no
-    /// stored key at all (auto heuristic -> local), THEN stores an API key
+    /// drifted in the meantime — "engine switch = one explicit verb". Builds a
+    /// fresh auto-resolved-LOCAL index with no stored key at all (auto
+    /// heuristic -> local), THEN stores an API key
     /// (which would flip a BRAND NEW auto-resolution to remote), THEN
     /// `REINDEX`es — and asserts the index is STILL local. This is also a
     /// meaningful behavioral check, not just a metapage-byte one: if the
@@ -21884,11 +21885,12 @@ mod tests {
         );
     }
 
-    /// Mode L end-to-end (spec success criterion: recall 1.0 by construction
+    /// Mode L end-to-end (recall 1.0 by construction
     /// at ~1% selectivity), on the HARD correlated construction: tenant ==
     /// generator cluster, so each tenant's rows live in exactly one vector
-    /// cluster — the case where graph/probe engines strand and the filter-first exact mode must win. Also
-    /// covers the cross-type scankey path (`int4` column, `::int8` literal).
+    /// cluster — the case where graph/probe engines strand and the filter-first
+    /// exact mode must win. Also covers the cross-type scankey path (`int4`
+    /// column, `::int8` literal).
     #[pg_test]
     fn am_local_filtered_mode_l_is_exact_at_low_selectivity() {
         install_am_opclasses();
@@ -22192,7 +22194,7 @@ mod tests {
     /// are candidates until the executor re-checks the original qual against
     /// the heap tuple (`xs_recheck = true` — the documented text-recheck
     /// design). With duplicated values across many rows (the collision-free
-    /// analogue the spec asks for — a true FNV-1a64 collision isn't
+    /// analogue — a true FNV-1a64 collision isn't
     /// constructible in a test) the recheck must pass everything through
     /// unchanged and never leak a wrong-tenant row.
     #[pg_test]
@@ -24087,7 +24089,7 @@ mod tests {
         );
     }
 
-    // ---- vector trigger lane: declaration and validation (PR4) ----
+    // ---- vector trigger lane: declaration and validation ----
 
     /// `promote(table, partition_column => ...)` against `env`'s mock, expecting an ERROR.
     fn part_promote_error(table: &str, partition: &str) -> FtsError {
@@ -24357,7 +24359,7 @@ mod tests {
         assert_eq!(env.registered().len(), 0);
     }
 
-    // ---- vector trigger lane: routing of writes (PR4) ----
+    // ---- vector trigger lane: routing of writes ----
 
     /// Seeds `rows` (`(id, tenant, vector)`), delivers them and forgets the requests.
     fn part_seed(env: &PartEnv, rows: &[(i64, i64, &str)]) {
@@ -24800,7 +24802,7 @@ mod tests {
         assert_eq!(env.registered().len(), 1);
     }
 
-    // ---- vector trigger lane: mixed-version queues and backfill (PR4) ----
+    // ---- vector trigger lane: mixed-version queues and backfill ----
 
     /// Every consumer accepts bare-string and `{id, p}` delete entries in one queue: an object goes to
     /// its namespace, a bare id to the table's own (pre-partition) namespace; an unpartitioned table
@@ -27661,7 +27663,7 @@ mod tests {
         );
     }
 
-    /// M1, pinned: the scan widens only after every candidate of the probed
+    /// Pinned: the scan widens only after every candidate of the probed
     /// lists is rescored, and the cap counts rescored rows. A cap below the
     /// first set's size ends it before a second list is read, so a residual
     /// whose matches lie in unprobed lists finds nothing (at 1M rows the
@@ -27717,7 +27719,7 @@ mod tests {
         })
     }
 
-    /// M2: `relaxed_order` is batch-wise for every plan node that consumes the
+    /// `relaxed_order` is batch-wise for every plan node that consumes the
     /// index order. An Incremental Sort (secondary `ORDER BY` column) trusts it
     /// and emits a later batch's rows out of order; `strict_order` stays
     /// monotone.
@@ -27759,10 +27761,10 @@ mod tests {
         Spi::run("SET enable_seqscan = on").expect("restore enable_seqscan");
     }
 
-    /// M3, pinned: on uniform data later slices mostly hold rows closer than
+    /// Pinned: on uniform data later slices mostly hold rows closer than
     /// the last one served, so `strict_order` drops them and rescores until the
     /// lists run out (here the whole table) for the rows `off` already had. An
-    /// early end loses rows on clustered data (probe, PR 3 notes), so the bill
+    /// early end loses rows on clustered data (probe), so the bill
     /// stays and the docs steer to `relaxed_order` plus a CTE re-sort.
     #[pg_test]
     fn am_iterative_scan_strict_order_pays_for_the_whole_table_on_uniform_data() {
@@ -28757,7 +28759,7 @@ mod tests {
         );
     }
 
-    /// Other half: granting `SELECT` (no
+    /// The other half of the test above: granting `SELECT` (no
     /// ownership needed) is enough for `index_drift` to succeed — a separate
     /// test/connection from the rejection case above since nothing may run
     /// after a `PgTryBuilder`-caught error in the SAME test.
@@ -29754,8 +29756,9 @@ mod tests {
     /// row — a rolled-back enclosing transaction or a flip-vs-commit crash),
     /// simulated by flipping the metapage directly: a re-run must repair
     /// (registry row + backfill job recreated) while SKIPPING the metapage
-    /// flip it already has. Also the execution vehicle for the re-broadcast (`CacheInvalidateRelcacheByRelid` on this
-    /// arm): the broadcast itself is only observable from a warm SECOND
+    /// flip it already has. Also the execution vehicle for the re-broadcast
+    /// (`CacheInvalidateRelcacheByRelid` on this arm): the broadcast itself is
+    /// only observable from a warm SECOND
     /// backend — the same committed-state dblink limitation that keeps
     /// `lifecycle_flip_mode_invalidates_other_backends_cached_mode`
     /// #[ignore]d — so this test proves the arm (including the new call)
@@ -30497,6 +30500,55 @@ mod tests {
         assert_eq!(engine, Some("pgvector".to_string()));
     }
 
+    /// The access methods of `table`'s indexes other than its primary key, e.g. `Some("hnsw")`.
+    fn index_access_methods(table: &str) -> Option<String> {
+        Spi::get_one::<String>(&format!(
+            "SELECT string_agg(a.amname::text, ',' ORDER BY a.amname) FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+             JOIN pg_catalog.pg_am a ON a.oid = c.relam \
+             WHERE i.indrelid = '{table}'::regclass AND NOT i.indisprimary"
+        ))
+        .expect("index am query")
+    }
+
+    /// Without `engine`, `create_index` builds the native engine, the planner serves an `ORDER BY`
+    /// from it, and `engine => 'pgvector'` still builds hnsw.
+    #[pg_test]
+    fn lifecycle_create_index_defaults_to_the_native_engine() {
+        install_am_opclasses();
+        let (default, pgvector) = ("lc_create_default", "lc_create_default_pgvector");
+        for table in [default, pgvector] {
+            Spi::run(&format!(
+                "CREATE TABLE {table} (id bigint PRIMARY KEY, embedding vector(2)); \
+                 INSERT INTO {table} SELECT g, ARRAY[g, g * 2]::real[]::vector FROM generate_series(1, 20) g"
+            ))
+            .expect("create table");
+        }
+
+        Spi::run(&format!(
+            "SELECT pinecone.create_index('{default}', 'embedding')"
+        ))
+        .expect("create_index without engine");
+        assert_eq!(index_access_methods(default).as_deref(), Some("pinecone"));
+        let index = format!("{default}_embedding_pinecone_idx");
+        assert_eq!(index_mode(&index), crate::local::metapage::Mode::Local);
+        Spi::run("SET LOCAL enable_seqscan = off").expect("set enable_seqscan");
+        let plan = explain_lines(&format!(
+            "SELECT id FROM {default} ORDER BY embedding <=> '[1,2]' LIMIT 5"
+        ))
+        .join("\n");
+        assert!(
+            plan.contains(&format!("Index Scan using {index}")),
+            "plan = {plan}"
+        );
+
+        Spi::run(&format!(
+            "SELECT pinecone.create_index('{pgvector}', 'embedding', engine => 'pgvector')"
+        ))
+        .expect("create_index pgvector");
+        assert_eq!(index_access_methods(pgvector).as_deref(), Some("hnsw"));
+    }
+
     #[pg_test]
     fn lifecycle_create_index_native_then_set_engine_round_trips_to_remote_and_back() {
         install_am_opclasses();
@@ -30579,30 +30631,271 @@ mod tests {
         assert_eq!(mode_after_demote, crate::local::metapage::Mode::Local);
     }
 
+    /// A pgvector row `track` or `promote` also owns (create_index after `track`, `promote` after
+    /// create_index, or a demote that kept the Pinecone index) is a live registration: `DROP INDEX`
+    /// of its hnsw index keeps it, and `set_engine(.., 'native')` refuses it.
     #[pg_test]
-    fn lifecycle_set_engine_pgvector_transitions_are_named_as_unsupported() {
+    fn lifecycle_drop_index_keeps_a_pgvector_row_track_or_promote_owns() {
         install_am_opclasses();
-        let table = "lc_set_engine_pgvector_gap";
+        let (tracked, promoted, demoted) = (
+            "lc_pgvector_tracked",
+            "lc_pgvector_promoted",
+            "lc_pgvector_demoted",
+        );
         Spi::run(&format!(
-            "CREATE TABLE {table} (id bigint PRIMARY KEY, embedding vector(2))"
+            "CREATE TABLE {tracked} (id bigint PRIMARY KEY, embedding vector(2)); \
+             CREATE TABLE {promoted} (LIKE {tracked} INCLUDING ALL); \
+             CREATE TABLE {demoted} (LIKE {tracked} INCLUDING ALL); \
+             SELECT pinecone.track('{tracked}'); \
+             SELECT pinecone.create_index('{tracked}', 'embedding', engine => 'pgvector'); \
+             SELECT pinecone.create_index('{promoted}', 'embedding', engine => 'pgvector'); \
+             SELECT pinecone.create_index('{demoted}', 'embedding', engine => 'pgvector'); \
+             UPDATE pinecone.tables SET mode = 'remote', index_name = 'lc-promoted', \
+                    namespace = 'public.{promoted}' WHERE relid = '{promoted}'::regclass; \
+             UPDATE pinecone.tables SET index_name = 'lc-demoted', namespace = 'public.{demoted}' \
+                    WHERE relid = '{demoted}'::regclass"
         ))
-        .expect("create table");
-        Spi::run(&format!(
-            "SELECT pinecone.create_index('{table}', 'embedding', engine => 'pgvector')"
-        ))
-        .expect("create_index pgvector");
+        .expect("pgvector rows track and promote own");
+        for table in [tracked, promoted, demoted] {
+            Spi::run(&format!("DROP INDEX {table}_embedding_pinecone_idx")).expect("drop index");
+            assert!(
+                am_registry_row_exists(relid_of(table)),
+                "{table}: DROP INDEX must keep a row track or promote owns"
+            );
+            let outcome: Result<(), String> = PgTryBuilder::new(|| {
+                Spi::run(&format!("SELECT pinecone.set_engine('{table}', 'native')"))
+                    .expect("statement should raise a Postgres ERROR, not an SpiError");
+                Ok(())
+            })
+            .catch_others(|caught| Err(error_message(caught)))
+            .execute();
+            let message = outcome.expect_err("set_engine must refuse a row track or promote owns");
+            assert!(
+                message.contains("also registered by pinecone.track or promote"),
+                "message = {message}"
+            );
+        }
+    }
 
-        let outcome: Result<(), String> = PgTryBuilder::new(|| {
+    /// `set_engine(.., 'native')` refuses a partitioned table and a vector column renamed since
+    /// `create_index`; the renamed table's row survives an unrelated `DROP INDEX` (its hnsw index
+    /// is still there).
+    #[pg_test]
+    fn lifecycle_set_engine_refuses_a_partitioned_table_and_a_renamed_column() {
+        install_am_opclasses();
+        let (parted, renamed) = ("lc_pgvector_parted", "lc_pgvector_renamed");
+        Spi::run(&format!(
+            "CREATE TABLE {parted} (id bigint PRIMARY KEY, embedding vector(2)) PARTITION BY RANGE (id); \
+             CREATE TABLE {parted}_1 PARTITION OF {parted} FOR VALUES FROM (0) TO (100); \
+             SELECT pinecone.create_index('{parted}', 'embedding', engine => 'pgvector'); \
+             CREATE TABLE {renamed} (id bigint PRIMARY KEY, note text, embedding vector(2)); \
+             CREATE INDEX {renamed}_note_idx ON {renamed} (note); \
+             SELECT pinecone.create_index('{renamed}', 'embedding', engine => 'pgvector'); \
+             ALTER TABLE {renamed} RENAME COLUMN embedding TO emb; \
+             DROP INDEX {renamed}_note_idx"
+        ))
+        .expect("a partitioned and a renamed pgvector-engine table");
+        assert!(
+            am_registry_row_exists(relid_of(renamed)),
+            "an unrelated DROP INDEX keeps the row"
+        );
+        for (table, expected) in [
+            (parted, "is partitioned"),
+            (renamed, "column \"embedding\" not found"),
+        ] {
+            let outcome: Result<(), String> = PgTryBuilder::new(|| {
+                Spi::run(&format!("SELECT pinecone.set_engine('{table}', 'native')"))
+                    .expect("statement should raise a Postgres ERROR, not an SpiError");
+                Ok(())
+            })
+            .catch_others(|caught| Err(error_message(caught)))
+            .execute();
+            let message = outcome.expect_err("set_engine must refuse it");
+            assert!(message.contains(expected), "message = {message}");
+        }
+    }
+
+    /// `set_engine` names what it cannot do in place: `pgvector -> remote` goes through `native`,
+    /// `native -> pgvector` is a drop plus `create_index`, and a second hnsw index on the column is
+    /// not guessed between.
+    #[pg_test]
+    fn lifecycle_set_engine_names_the_pgvector_transitions_it_cannot_make() {
+        install_am_opclasses();
+        let (pgvector, native) = ("lc_set_engine_pgvector_gap", "lc_set_engine_native_gap");
+        Spi::run(&format!(
+            "CREATE TABLE {pgvector} (id bigint PRIMARY KEY, embedding vector(2)); \
+             CREATE TABLE {native} (LIKE {pgvector} INCLUDING ALL); \
+             SELECT pinecone.create_index('{pgvector}', 'embedding', engine => 'pgvector'); \
+             SELECT pinecone.create_index('{native}', 'embedding')"
+        ))
+        .expect("create a pgvector-engine and a native table");
+        let refusal = |sql: String| {
+            PgTryBuilder::new(|| {
+                Spi::run(&sql).expect("statement should raise a Postgres ERROR, not an SpiError");
+                None
+            })
+            .catch_others(|caught| Some(error_message(caught)))
+            .execute()
+            .unwrap_or_else(|| panic!("{sql} must be refused"))
+        };
+
+        let message = refusal(format!(
+            "SELECT pinecone.set_engine('{pgvector}', 'remote')"
+        ));
+        assert!(
+            message.contains("not supported yet")
+                && message.contains(&format!("set_engine('public.{pgvector}', 'native') first")),
+            "message = {message}"
+        );
+        let message = refusal(format!(
+            "SELECT pinecone.set_engine('{native}', 'pgvector')"
+        ));
+        assert!(
+            message.contains("not supported yet") && message.contains("DROP INDEX"),
+            "message = {message}"
+        );
+
+        Spi::run(&format!(
+            "CREATE INDEX {pgvector}_second ON {pgvector} USING hnsw (embedding vector_l2_ops)"
+        ))
+        .expect("a second hnsw index");
+        let message = refusal(format!(
+            "SELECT pinecone.set_engine('{pgvector}', 'native')"
+        ));
+        assert!(
+            message.contains("has 2 hnsw indexes on \"embedding\"")
+                && message.contains(&format!("{pgvector}_embedding_pinecone_idx"))
+                && message.contains(&format!("{pgvector}_second")),
+            "message = {message}"
+        );
+    }
+
+    /// The way off the pre-0.10.1 default: `set_engine(.., 'native')` on a `create_index(engine =>
+    /// 'pgvector')` table builds the native index (same metric) under the hnsw index's name, drops the
+    /// hnsw index and its registry row, and the planner uses the native one. On the table or the index.
+    #[pg_test]
+    fn lifecycle_set_engine_moves_a_pgvector_index_to_native() {
+        install_am_opclasses();
+        for (table, index_name, index, target) in [
+            (
+                "lc_pgvector_to_native",
+                "NULL",
+                "lc_pgvector_to_native_embedding_pinecone_idx",
+                "lc_pgvector_to_native",
+            ),
+            (
+                "lc_pgvector_to_native_i",
+                "'lc_custom_hnsw'",
+                "lc_custom_hnsw",
+                "lc_custom_hnsw",
+            ),
+        ] {
+            Spi::run(&format!(
+                "CREATE TABLE {table} (id bigint PRIMARY KEY, embedding vector(2)); \
+                 INSERT INTO {table} SELECT g, ARRAY[g, g * 2]::real[]::vector FROM generate_series(1, 20) g; \
+                 SELECT pinecone.create_index('{table}', 'embedding', engine => 'pgvector', metric => 'l2', \
+                                              index_name => {index_name})"
+            ))
+            .expect("create a pgvector-engine table");
+            let relid = relid_of(table);
+            assert!(am_registry_row_exists(relid));
+
+            Spi::run(&format!("SELECT pinecone.set_engine('{target}', 'native')"))
+                .expect("set_engine pgvector -> native");
+
+            assert_eq!(index_access_methods(table).as_deref(), Some("pinecone"));
+            assert_eq!(index_mode(index), crate::local::metapage::Mode::Local);
+            assert_eq!(
+                crate::catalog::index_first_opclass_name(relid_of(index)).as_deref(),
+                Some("vector_l2_ops")
+            );
+            assert!(
+                !am_registry_row_exists(relid),
+                "a native index has no registry row"
+            );
+            Spi::run("SET LOCAL enable_seqscan = off").expect("set enable_seqscan");
+            let plan = explain_lines(&format!(
+                "SELECT id FROM {table} ORDER BY embedding <-> '[1,2]' LIMIT 5"
+            ))
+            .join("\n");
+            assert!(
+                plan.contains(&format!("Index Scan using {index}")),
+                "plan = {plan}"
+            );
             Spi::run(&format!("SELECT pinecone.set_engine('{table}', 'native')"))
-                .expect("statement should raise a Postgres ERROR, not an SpiError");
-            Ok(())
-        })
-        .catch_others(|caught| Err(error_message(caught)))
-        .execute();
+                .expect("set_engine to the current engine is a no-op");
+        }
+    }
 
-        let message = outcome
-            .expect_err("pgvector -> native must be named as unsupported, not silently attempted");
-        assert!(message.contains("not supported yet"), "message = {message}");
+    /// A pgvector row whose hnsw index is gone (what 0.10.0 left after a `DROP INDEX`; here the event
+    /// trigger is off): `set_engine(.., 'native')` still builds the native index, under
+    /// `create_index`'s default name, and deletes the row.
+    #[pg_test]
+    fn lifecycle_set_engine_moves_a_stale_pgvector_row_to_native() {
+        install_am_opclasses();
+        let table = "lc_pgvector_stale_row";
+        Spi::run(&format!(
+            "CREATE TABLE {table} (id bigint PRIMARY KEY, embedding vector(2)); \
+             SELECT pinecone.create_index('{table}', 'embedding', engine => 'pgvector'); \
+             ALTER EVENT TRIGGER pg_pinecone_on_sql_drop DISABLE; \
+             DROP INDEX {table}_embedding_pinecone_idx; \
+             ALTER EVENT TRIGGER pg_pinecone_on_sql_drop ENABLE"
+        ))
+        .expect("a pgvector row without its hnsw index");
+        let relid = relid_of(table);
+        assert!(am_registry_row_exists(relid));
+
+        Spi::run(&format!("SELECT pinecone.set_engine('{table}', 'native')"))
+            .expect("set_engine pgvector -> native");
+        assert_eq!(index_access_methods(table).as_deref(), Some("pinecone"));
+        assert_eq!(
+            index_mode(&format!("{table}_embedding_pinecone_idx")),
+            crate::local::metapage::Mode::Local
+        );
+        assert!(!am_registry_row_exists(relid));
+    }
+
+    /// `DROP INDEX` of the hnsw index `create_index(engine => 'pgvector')` built forgets its registry
+    /// row, as it does a pg_pinecone index's, so `create_index` takes the table again; dropping another
+    /// index of the table keeps the row, and `DROP TABLE` forgets it too.
+    #[pg_test]
+    fn lifecycle_drop_index_of_a_pgvector_index_forgets_its_registry_row() {
+        install_am_opclasses();
+        let (table, dropped) = ("lc_pgvector_drop_index", "lc_pgvector_drop_table");
+        for t in [table, dropped] {
+            Spi::run(&format!(
+                "CREATE TABLE {t} (id bigint PRIMARY KEY, note text, embedding vector(2)); \
+                 CREATE INDEX {t}_note_idx ON {t} (note); \
+                 SELECT pinecone.create_index('{t}', 'embedding', engine => 'pgvector')"
+            ))
+            .expect("create a pgvector-engine table");
+        }
+        let relid = relid_of(table);
+        Spi::run(&format!("DROP INDEX {table}_note_idx")).expect("drop another index");
+        assert!(
+            am_registry_row_exists(relid),
+            "dropping another index keeps the row"
+        );
+
+        Spi::run(&format!("DROP INDEX {table}_embedding_pinecone_idx"))
+            .expect("drop the hnsw index");
+        assert!(
+            !am_registry_row_exists(relid),
+            "DROP INDEX must forget the pgvector row"
+        );
+        Spi::run(&format!(
+            "SELECT pinecone.create_index('{table}', 'embedding')"
+        ))
+        .expect("create_index takes the table again");
+        assert_eq!(index_access_methods(table).as_deref(), Some("pinecone"));
+
+        let dropped_relid = relid_of(dropped);
+        assert!(am_registry_row_exists(dropped_relid));
+        Spi::run(&format!("DROP TABLE {dropped}")).expect("drop table");
+        assert!(
+            !am_registry_row_exists(dropped_relid),
+            "DROP TABLE must forget the pgvector row"
+        );
     }
 
     /// A second `create_index` against a table that
@@ -30639,7 +30932,7 @@ mod tests {
         );
     }
 
-    // ---- E1: attach an existing Pinecone index ----
+    // ---- attach an existing Pinecone index ----
 
     #[pg_test]
     fn attach_via_create_index_succeeds_without_backfill_and_shows_attached() {
@@ -34266,10 +34559,9 @@ mod tests {
 
     // ---- pinecone.tables.storage / detached-mode guards ----
     //
-    // These cover the guards only, so every test here forces the state directly via a
-    // superuser `UPDATE pinecone.tables SET storage = 'detached'`, exactly as
-    // the plan's own test-first mandate requires ("every guard must be
-    // testable by setting the storage column directly in tests").
+    // These cover the guards only, so every test here forces the state
+    // directly via a superuser `UPDATE pinecone.tables SET storage =
+    // 'detached'`: every guard must be testable without the verbs.
 
     /// Flips `table`'s registry row to `storage = 'detached'` directly — the
     /// mechanism every test below uses in place of the not-yet-built
@@ -34499,7 +34791,7 @@ mod tests {
         assert!(message.contains("remote-only"), "message = {message}");
     }
 
-    /// F1b: `id_column` is immutable while detached — an id change would
+    /// `id_column` is immutable while detached — an id change would
     /// enqueue a `'delete'` for the OLD id with nothing to replace it
     /// (the row's vector is NULL under detached semantics), silently
     /// losing Pinecone's only copy.
@@ -35285,8 +35577,8 @@ mod tests {
     /// same-statement id PERMUTATION preserves the statement's id SET, so
     /// the statement-level transition-table check can never see it — yet
     /// every permuted row's local↔remote mapping silently corrupts. The
-    /// row-level BEFORE UPDATE guard (which detach_storage will
-    /// install) sees each row's OLD/NEW pair directly and must ERROR.
+    /// row-level BEFORE UPDATE guard (which detach_storage installs) sees
+    /// each row's OLD/NEW pair directly and must ERROR.
     #[pg_test]
     fn detached_id_guard_catches_same_statement_permutation() {
         create_extension_vector();
@@ -36931,7 +37223,7 @@ mod tests {
     const FTS_QUEUE: &str = "pinecone.doc_outbox";
     const FTS_REGISTRY: &str = "pinecone.doc_tables";
 
-    /// T26 (decision M12): the document registry is dumped with the extension (so a restore
+    /// The document registry is dumped with the extension (so a restore
     /// keeps what is tracked); the queue is not, like the vector outbox.
     #[pg_test]
     fn doc_tables_is_dumped_with_the_extension_and_the_queue_is_not() {
@@ -39018,7 +39310,7 @@ mod tests {
             .0
     }
 
-    // ---- client behaviour through the mocks (PR1) ----
+    // ---- client behaviour through the mocks ----
 
     /// The same for a document search: a 404 for a namespace nothing was ever written to is no match.
     #[pg_test]
@@ -39032,7 +39324,7 @@ mod tests {
         assert_eq!(env.docs.count(Endpoint::Search), 1);
     }
 
-    // ---- document lane: track_docs(partition_column) (PR7) ----
+    // ---- document lane: track_docs(partition_column) ----
 
     /// A column of the document registry row of `table`, as text.
     fn part_doc_registry_text(table: &str, column: &str) -> Option<String> {
@@ -39310,7 +39602,7 @@ mod tests {
         );
     }
 
-    // ---- document lane: routing of writes (PR7) ----
+    // ---- document lane: routing of writes ----
 
     /// An INSERT queues ids only (as today); the drain reads each row's partition and sends one
     /// request per namespace with that tenant's documents; the namespaces are registered on first write.
@@ -39553,7 +39845,7 @@ mod tests {
         assert_eq!((done, total, state.as_str()), (2500, Some(2500), "ready"));
     }
 
-    // ---- document lane: search binding (PR7) ----
+    // ---- document lane: search binding ----
 
     /// Ids of `search_docs(table, 'q', <rest>)`, in rank order.
     fn part_search_ids(table: &str, rest: &str) -> Vec<String> {
@@ -39690,7 +39982,7 @@ mod tests {
         );
     }
 
-    // ---- document lane: attach, DDL guard, write-time checks, status (PR7) ----
+    // ---- document lane: attach, DDL guard, write-time checks, status ----
 
     /// Attaching an existing index with a partition declares a whole family of namespaces: the
     /// declaration warns that `prefix:*` may hold documents this table does not own.
@@ -40346,7 +40638,7 @@ mod tests {
         }
     }
 
-    // ---- access method: the partitioned remote index (PR5) ----
+    // ---- access method: the partitioned remote index ----
     //
     // Adopted from the red tests of the `partition-tests` archive branch (TESTS.md section E). Black box: SQL
     // in; the vectors mock's recorded requests, `status()`, the registries and (where the enqueue contract is the
@@ -40479,7 +40771,7 @@ mod tests {
         }
     }
 
-    // ---- access method: partitioned remote index (PR5) ----
+    // ---- access method: partitioned remote index ----
 
     /// `create_index(.., engine => 'remote', partition_column => 'tenant_id')` builds the partition
     /// column as the second key (a changed key forces a fresh `aminsert`) and registers it.
@@ -41438,7 +41730,7 @@ mod tests {
         assert_eq!(body["filter"], json!({"tenant_id": {"$eq": 42}}));
     }
 
-    // ---- recovery, orphans and delete_partition of a partitioned vector table (PR6) ----
+    // ---- recovery, orphans and delete_partition of a partitioned vector table ----
     //
     // The first three are adopted from the red tests of the `partition-tests` archive branch (TESTS.md D26,
     // D33, D34); the rest are this PR's own.

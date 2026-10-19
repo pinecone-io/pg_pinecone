@@ -1,7 +1,7 @@
 # pgrx extension crate
 [package]
 name = "pg_pinecone"
-version = "0.10.0"
+version = "0.10.1"
 edition.workspace = true
 license.workspace = true
 

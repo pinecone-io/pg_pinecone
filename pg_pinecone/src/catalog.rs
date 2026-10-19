@@ -349,6 +349,26 @@ pub(crate) fn pg_pinecone_am_index_for_table(relid: pg_sys::Oid) -> Option<pg_sy
     .expect("pg_pinecone: pg_pinecone-AM-index-for-table query failed")
 }
 
+/// The names of `relid`'s hnsw indexes on `column`: what `pinecone.create_index(.., engine =>
+/// 'pgvector')` built.
+pub(crate) fn hnsw_index_names(relid: pg_sys::Oid, column: &str) -> Vec<String> {
+    Spi::connect(|client| {
+        client
+            .select(
+                "SELECT c.relname::text AS relname FROM pg_catalog.pg_index i \
+                 JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
+                 JOIN pg_catalog.pg_am a ON a.oid = c.relam \
+                 JOIN pg_catalog.pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = i.indkey[0] \
+                 WHERE i.indrelid = $1::oid AND a.amname = 'hnsw' AND att.attname = $2 ORDER BY 1",
+                None,
+                &[relid.into(), column.into()],
+            )
+            .expect("pg_pinecone: hnsw index catalog query failed")
+            .map(|row| text(&row, "relname"))
+            .collect()
+    })
+}
+
 /// Resolves a possibly-stale `relid` (the table may have been dropped since it
 /// was tracked) to its current `(schema, table)` name, or `None` if it no
 /// longer resolves. Never fails — used by `pinecone.status`, which must not either.

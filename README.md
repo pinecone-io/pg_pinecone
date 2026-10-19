@@ -6,8 +6,8 @@ direction, without touching a query.
 
 | Engine | What it is | Reach for it when |
 |---|---|---|
-| **`pgvector`** *(default)* | The HNSW/ivfflat you already run | Unfiltered, in-RAM similarity search |
-| **`native`** | Pinecone's engine, in-process — no account, no API key, no network | **Filtered** search where matches cluster unevenly (e.g. per-tenant) |
+| **`pgvector`** | The HNSW/ivfflat you already run | You want an HNSW graph the planner serves directly, or pgvector's own iterative scan |
+| **`native`** *(default)* | Pinecone's engine, in-process — no account, no API key, no network | Unfiltered and **filtered** search, above all where matches cluster unevenly (e.g. per-tenant) |
 | **`remote`** | Pinecone's serverless platform, behind the same index | A table that has **outgrown the node** |
 
 All three back the same column. `ORDER BY embedding <=> $1 LIMIT k` reads identically no matter
@@ -72,7 +72,8 @@ writer session read it there, so no session ever has to hold it.
 
 ## Getting started
 
-A `native` index on a table you already have — in one call, no account, no network:
+An index on a table you already have, in one call, no account, no network. `native`, Pinecone's engine
+in-process, is the default:
 
 ```sql
 CREATE EXTENSION vector;      -- pgvector first: pg_pinecone builds on it
@@ -84,7 +85,8 @@ CREATE TABLE docs (
     embedding vector(768)
 );
 
-SELECT pinecone.create_index('docs', 'embedding', engine => 'native');
+-- load your rows first: below 10,000 rows the index is flat (an exact scan) until REINDEX
+SELECT pinecone.create_index('docs', 'embedding');
 ```
 
 Your existing query is unchanged — and the planner uses the index:
@@ -94,9 +96,15 @@ EXPLAIN SELECT id, body FROM docs ORDER BY embedding <=> '[...]' LIMIT 10;
 -- Index Scan using docs_embedding_pinecone_idx on docs
 ```
 
-Leave out `engine` and you get `pgvector` (the default). That's the whole adoption cost of
-`native`: one function call. `create_index` also takes `metric => 'cosine' | 'l2' | 'ip'` (default
-`cosine`) and an explicit `index_name`.
+`engine => 'pgvector'` builds a plain HNSW index instead, `'remote'` a Pinecone-backed one.
+`create_index` also takes `metric => 'cosine' | 'l2' | 'ip'` (default `cosine`) and an explicit
+`index_name`.
+
+Before 0.10.1, leaving out `engine` built HNSW. To move an index created before 0.10.1 to native:
+
+```sql
+SELECT pinecone.set_engine('docs', 'native');   -- builds the native index under the same name, then drops the HNSW one
+```
 
 ## Examples
 
@@ -153,12 +161,12 @@ See [`docs/reference.md`](docs/reference.md) for every function, mode, and GUC.
 | | `pgvector` | `native` | `remote` |
 |---|---|---|---|
 | **What it is** | HNSW/ivfflat you already run | Pinecone's engine, in-process | Pinecone's serverless platform |
-| **Default** | Yes | No — opt in | No — opt in |
-| **Best for** | Unfiltered, in-RAM search | Correlated, cross-tenant filtered search | A table that's outgrown the node |
+| **Default** | No — `engine => 'pgvector'` | Yes | No — `engine => 'remote'` |
+| **Best for** | An HNSW graph the planner serves directly; pgvector's own iterative scan | Unfiltered and filtered search; strongest on correlated, cross-tenant filters | A table that's outgrown the node |
 | **Needs** | pgvector | pgvector | pgvector + preload + API key |
 
-`engine = 'pgvector'` is a real `USING hnsw` index the planner serves directly — zero `pg_pinecone`
-overhead on the read path; `pg_pinecone` only adds lifecycle and the ability to switch it out later.
+`engine => 'pgvector'` is a real `USING hnsw` index the planner serves directly: zero `pg_pinecone`
+overhead on the read path.
 
 ### Filtered search: native's case
 
@@ -183,6 +191,9 @@ residual-filter benchmark is [`bench/vector/REPORT-residual-filter.md`](bench/ve
 > Figures are margins over a pre-committed recall bar, not absolute milliseconds (measured on a
 > temporary VM, ahead of a bare-metal rerun). **Scope:** correlated filters queried *cross-tenant*.
 > A tenant-scoped filtered query is pgvector's comfort zone too and isn't part of this claim.
+
+This release's filtered cells (the same 1% and 10% keys, cross-tenant and tenant-style, against hnsw and
+PRISM) are in the [0.10.0 report](bench/vector/REPORT-0.10.0.md#filtered-cells).
 
 **On `remote`.** The same key is stored as Pinecone metadata (`{"tenant_id": 7}`) and
 `WHERE tenant_id = $1` is sent as the filter `{"tenant_id": {"$eq": 7}}`, so Pinecone narrows the
@@ -221,31 +232,37 @@ but may return fewer rows and can rescore up to `pinecone.max_scan_tuples` rows 
 prefer `relaxed_order` — see [Iterative scan](docs/reference.md#iterative-scan). For
 `engine => 'pgvector'` indexes use pgvector's own `hnsw.iterative_scan`.
 
-Measured on 1M × 768d wiki_dpr embeddings (release Postgres 17, `LIMIT 10`, 500 cross-tenant
-queries): a 1% or 10% key the index pushes, plus a 0.3% or 1% residual it cannot.
+Measured on the 0.10.0 box (AWS `r6id.4xlarge`, PostgreSQL 17, 2026-10-19): 1M × 768d wiki_dpr embeddings,
+`LIMIT 10`, 500 cross-tenant queries, a 1% or 10% key the index pushes plus a 0.3% or 1% residual it cannot.
+The `auto`, `off` and `relaxed_order` columns use the index's own pool (a pushed key keeps 1,000 rows, the 0.9.0 default).
 
-| Key + residual | `off`: rows / recall | `relaxed_order`: rows / recall | Recall ≥ 0.95 at (p50, 1 / 8 clients) | Exact seqscan (1 / 8 clients) |
-|---|---|---|---|---|
-| 1% + 0.3% | 3.0 / 0.30 | 10 / 0.76 | `rescore_multiplier` 50 + `scan_fraction` 1.0 (22 / 23 ms) | 17 / 85 ms |
-| 1% + 1% | 9.6 / 0.75 | 10 / 0.79 | not reached: 0.94 at `rescore_multiplier` 50 | 20 / 97 ms |
-| 10% + 0.3% | 3.4 / 0.32 | 10 / 0.78 | `rescore_multiplier` 100 (34 / 43 ms) | 19 / 90 ms |
-| 10% + 1% | 8.5 / 0.67 | 10 / 0.79 | `rescore_multiplier` 50 (21 / 22 ms) | 22 / 103 ms |
+| Key + residual | `auto` (default): rows / recall, p50 1 / 8 clients | `off`: rows / recall | `relaxed_order`: rows / recall | Recall ≥ 0.95 at (p50, 1 / 8 clients) | Exact seqscan (1 / 8 clients) |
+|---|---|---|---|---|---|
+| 1% + 0.3% | 10.0 / 1.000, 33.6 / 84.1 ms (seqscan) | 10.0 / 1.000 (seqscan) | 10.0 / 1.000 (seqscan) | the default: the planner's seqscan | 32.4 / 78.7 ms |
+| 1% + 1% | 10.0 / 0.911, 30.4 / 28.0 ms | 9.6 / 0.869 | 10.0 / 0.902 | not reached: 0.935 at `rescore_multiplier` 50 | 34.3 / 84.4 ms |
+| 10% + 0.3% | 10.0 / 0.914, 49.2 / 51.2 ms | 3.3 / 0.325 | 10.0 / 0.919 | `relaxed_order`, `rescore_multiplier` 50: 0.972 (41.7 / 42.8 ms) | 34.4 / 81.5 ms |
+| 10% + 1% | 10.0 / 0.932, 36.9 / 36.6 ms | 8.6 / 0.801 | 10.0 / 0.935 | `auto`, `rescore_multiplier` 50: 0.973 (26.8 / 28.6 ms) | 39.0 / 91.7 ms |
 
-Both at `rescore_multiplier` 10, the 0.9.0 default, which 0.10 keeps for a scan with a pushed key. `relaxed_order` filled `LIMIT 10`
-in every query (`off`: 0–76%) for 0–7 ms more. Where recall reaches 0.95 (three cells), pg_pinecone
-takes 0.95–1.8× the exact sequential scan's time at one client and runs 2–5× faster at eight. That
-scan is the plan pgvector's planner picked in three of the four cells; in the fourth its hnsw index
-returned 0 rows at the default `hnsw.max_scan_tuples`. Every swept point:
-[report](bench/vector/REPORT-residual-filter.md). Knobs and caveats:
+In the 1% + 0.3% cell (32 matching rows) the planner now picks the sequential scan, exact (0.9.0 used the index;
+forced onto it, `auto` reads recall 0.804). `auto` fills `LIMIT 10` in every query; `off` underfills. The filtered path
+did not get faster in 0.10: row for row 2 to 13% slower than 0.9.0, and `auto` takes 2.0 to 2.8 times 0.9.0's default,
+which underfilled. pgvector's planner picks the sequential scan in three cells; in the fourth its hnsw index returns 0
+rows. Every point: [report](bench/vector/REPORT-0.10.0.md#leg-a-residual-filter-cells-against-090); knobs and caveats:
 [reference](docs/reference.md#measured-a-pushed-key-plus-a-residual-where-1m-x-768d).
 
-### Where pgvector still wins
+### Why native is the default, and where the others still win
 
-Unfiltered, in-RAM, the classic ANN-benchmark shape is pgvector's home turf. `native`'s unfiltered
-latency at 0.95 recall is still ~1.7× behind pgvector's — short of the ship gate it needs to clear
-before it could ever be the default. Until then, **`pgvector` stays the default**: pure similarity
-search, no filter, fits in RAM → ask for `pgvector` (or nothing — that's what you get). `native`
-earns its keep on filtered, churning workloads first.
+On the 0.10.0 box (AWS `r6id.4xlarge`, 1M × 768-d wiki_dpr, 2026-10-19; one client, PostgreSQL 17), `native`
+takes 1.12 / 1.74 ms p50 at recall 0.95 / 0.99 (its calibrated default: 0.958 at 1.29 ms) against pgvector's
+HNSW at 1.59 / 3.86 ms. Its index is 136 MB against 4,094 MB and builds in 39 s against 62 s
+([report](bench/vector/REPORT-0.10.0.md)). The cross-tenant filtered cells were native's already.
+
+`pgvector` stays a first-class choice: ask for `engine => 'pgvector'` when you want an HNSW graph the planner
+serves directly, or when a query needs pgvector's own iterative scan. It is faster on tenant-scoped filtered
+queries (the 1% key, in-region: 3.0 ms at recall 0.989 with `ef_search` 160 and its iterative scan, against
+native's 8.3 ms at 1.000). `pg_vectorsearch`'s PRISM (Timescale; PostgreSQL 18 only, alpha) is 1.2 to 1.4 times
+faster than native unfiltered at one client (0.89 / 1.42 ms at 0.95 / 0.99; 1.8 times in the pinned window), and it
+underfills selective cross-tenant filters (3.5 rows of 10 at the 1% key).
 
 ## The remote engine
 
@@ -260,7 +277,7 @@ and keep Postgres as the system of record.
   natively and dual-writes until the backfill drains, then flips in one step. *Demote*
   (`remote → native`) returns immediately and queues the rebuild: never unavailable while queued,
   but an availability gap equal to the rebuild once it starts (no `REINDEX CONCURRENTLY` yet — plan
-  it into a window). Details: [`docs/runbook.md`](docs/runbook.md#engine-lifecycle-pg_pineconecreate_index--set_engine--promote_index--demote_index).
+  it into a window). Details: [`docs/runbook.md`](docs/runbook.md#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index).
 - **Disaster recovery.** `recover_from_remote(tbl)` rebuilds the vector column from the registered
   index; `repoint(tbl, new_index)` re-points that registration (validating dimension/metric) after
   a backup restore; `backup_readiness(tbl)` is a read-only preflight. Recovery restores only what

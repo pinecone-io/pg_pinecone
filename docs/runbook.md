@@ -473,18 +473,21 @@ before standardizing on a value.
 ## Engine lifecycle (`pinecone.create_index` / `set_engine` / `promote_index` / `demote_index`)
 
 pg_pinecone 0.5's storage-engine surface: one vector column, three interchangeable engines —
-`'pgvector'` (a plain `USING hnsw` index; pgvector must be installed), `'native'` (the local
-pg_pinecone engine, `USING pinecone WITH (mode = 'local')`), `'remote'` (Pinecone-backed, `USING pinecone
-WITH (mode = 'remote')`). **Queries never change across engines** — the same `ORDER BY embedding
-<-> $1 LIMIT k` is served by whichever engine currently backs the column.
+`'native'` (the default: the local pg_pinecone engine, `USING pinecone WITH (mode = 'local')`),
+`'pgvector'` (a plain `USING hnsw` index; pgvector must be installed), `'remote'` (Pinecone-backed,
+`USING pinecone WITH (mode = 'remote')`). **Queries never change across engines** — the same
+`ORDER BY embedding <-> $1 LIMIT k` is served by whichever engine currently backs the column.
 
 ```sql
--- stand up an index on a chosen engine (defaults: engine 'pgvector', metric 'cosine'):
-SELECT pinecone.create_index('docs', 'embedding', engine => 'native', metric => 'l2');
+-- stand up an index (defaults: engine 'native', metric 'cosine'):
+SELECT pinecone.create_index('docs', 'embedding', metric => 'l2');
 
--- the one-verb switch (native <-> remote; accepts the table or the index):
+-- or on another engine:
+SELECT pinecone.create_index('docs', 'embedding', engine => 'pgvector');
+
+-- the one-verb switch (native <-> remote, pgvector -> native; accepts the table or the index):
 SELECT pinecone.set_engine('docs', 'remote');   -- routes through pinecone.promote_index
-SELECT pinecone.set_engine('docs', 'native');   -- routes through pinecone.demote_index
+SELECT pinecone.set_engine('docs', 'native');   -- routes through pinecone.demote_index (from pgvector: see below)
 
 -- or drive the pg_pinecone-AM index's lifecycle directly:
 SELECT pinecone.promote_index('docs_embedding_pinecone_idx');
@@ -533,9 +536,20 @@ any single HTTP attempt, no longer orphans the remote index — the queued oblig
 once reachable. A permanent-class refusal (e.g. `deletion_protection`) parks the row after
 `pinecone.outbox_max_attempts` with a warning naming the index for manual deletion.
 
-**Not supported yet**: `set_engine` to/from `'pgvector'` (stand up a fresh
-`pinecone.create_index(..., engine => ...)` instead — the error says exactly this); BYOC
-cloud/region overrides on this surface (uses `pinecone.am_cloud`/`pinecone.am_region`).
+**From `pgvector` (`pgvector -> native`)**: to move an index created before 0.10.1 to native,
+`SELECT pinecone.set_engine('docs', 'native')`. One transaction: it builds the native index (same
+metric), drops the HNSW index, gives its name to the native one and deletes the registry row. Writes
+wait for the build, as for any `CREATE INDEX`; reads keep the HNSW index until the drop at the end,
+which waits for running queries and holds new ones meanwhile (a `lock_timeout` bounds that). Below
+`small_n_threshold` (10,000 rows) the new index is flat until `REINDEX`. Refused: two HNSW indexes on
+the column, a partitioned table, a table `promote` registered (or `track`, before `create_index`).
+`DROP INDEX` of an HNSW index `create_index` built (or `DROP TABLE`) forgets its registry row, so
+`create_index` takes the table again (0.10.0 kept the row).
+
+**Not supported yet**: `set_engine` to `'pgvector'` (from `native`: `DROP INDEX`, then
+`create_index(.., engine => 'pgvector')`; a remote index goes to `native` first) and
+`pgvector -> remote` (through `native`), the errors say so; BYOC cloud/region overrides on this
+surface (uses `pinecone.am_cloud`/`pinecone.am_region`).
 
 ## Attach an existing index
 
@@ -703,6 +717,14 @@ In place: no drop, nothing re-sent to Pinecone, tables keep their indexes and qu
    ```
 
    `compiled` older than `installed` after the restart means the old library file is still in place: redo step 1.
+
+A changed function default lives in the catalog, so it takes effect at step 3, not at the restart. The first one is the
+default `engine` of `pinecone.create_index` (`pgvector` in 0.10.0, `native` after): until the update runs, a call without
+`engine` still builds `pgvector`. Indexes already built are never touched.
+
+To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')` after the update
+([engine lifecycle](#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index)). The 0.10.1 update
+also deletes the registry rows 0.10.0 kept for HNSW indexes dropped under it, which made `create_index` refuse their tables.
 
 **A native index of an older on-disk format is offline from the restart until `REINDEX`.** A release that changes the format says so in its changelog (0.10.0 writes format 3; under `pg_pinecone` nothing older exists, so this first applies at the next format change): a native index built before it cannot be read by the new library. Per entry point: the planner stops choosing it (one WARNING per backend, naming the index); a scan that is forced, and every `INSERT` into its table, fail with `pg_pinecone index '...' has format version 1 (this build reads 3): REINDEX it` (SQLSTATE 55000); `VACUUM` skips it with a WARNING and completes; `pinecone.index_format()` says `readable = false` and never raises. `ALTER EXTENSION pg_pinecone UPDATE` prints a WARNING listing these indexes. Rebuild them right after the update:
 

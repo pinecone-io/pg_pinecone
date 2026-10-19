@@ -119,7 +119,7 @@ Which scans use them:
 
 Calibration targets recall@10 and the pool does not follow the `LIMIT` (none reaches an index access method), so a larger `LIMIT` gets less over-fetch: a calibrated pool is often the 100-row minimum, which leaves a `LIMIT 100` no over-fetch at all (on the box a pool of 300 read recall@100 0.842 and a pool of 1,000 read 0.956). For `LIMIT 100` workloads set `rescore_multiplier = 10`.
 
-**`STORAGE PLAIN` for the vector column.** pgvector declares `vector` `STORAGE EXTERNAL`: a 768-d vector (3,080 bytes) lives in the TOAST table, and each rescored row costs about 5 buffer accesses (heap 0.7, TOAST heap 1.05, TOAST index 3.15) and a detoast, 3.9 ms of the 11.45 ms default query on the box. With the column `STORAGE PLAIN` the vector sits in the heap tuple: fetching 200 rows took 0.62 ms against 1.1 to 1.3 ms, and the native query at pool 200 and 20 lists fell from 2.96 to 2.29 ms (box, 0.9.0 library). `CREATE INDEX` and `pinecone.create_index(.., engine => 'native')` print a NOTICE with the statement when the column is `EXTERNAL` or `EXTENDED`, the vector is wide enough to be moved out of line (over 500 dimensions) and a PLAIN row would fit a page. They never change the column.
+**`STORAGE PLAIN` for the vector column.** pgvector declares `vector` `STORAGE EXTERNAL`: a 768-d vector (3,080 bytes) lives in the TOAST table, and each rescored row costs about 5 buffer accesses (heap 0.7, TOAST heap 1.05, TOAST index 3.15) and a detoast, 3.9 ms of the 11.45 ms default query on the box. With the column `STORAGE PLAIN` the vector sits in the heap tuple: fetching 200 rows took 0.62 ms against 1.1 to 1.3 ms, and the native query at pool 200 and 20 lists fell from 2.96 to 2.29 ms (box, 0.9.0 library). `CREATE INDEX` and a native `pinecone.create_index(..)` print a NOTICE with the statement when the column is `EXTERNAL` or `EXTENDED`, the vector is wide enough to be moved out of line (over 500 dimensions) and a PLAIN row would fit a page. They never change the column.
 
 ```sql
 ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN;   -- new rows
@@ -223,7 +223,8 @@ cursor keeps them until it is closed or exhausted.
 
 #### Measured: a pushed key plus a residual `WHERE` (1M x 768d)
 
-Release Postgres 17.10, pgvector 0.8.6, `LIMIT 10`, 500 cross-tenant queries, one run per point. A
+pg_pinecone 0.9.0,
+release Postgres 17.10, pgvector 0.8.6, `LIMIT 10`, 500 cross-tenant queries, one run per point. A
 key the index pushes (1 % or 10 % of the rows) plus an uncorrelated residual it cannot (0.3 % or
 1 %, 33 to 1,004 matches). `rm` is `rescore_multiplier`; times are p50 in ms at 1 / 8 clients.
 
@@ -435,14 +436,33 @@ isn't data, and a restored database may lag the remote index until `pinecone.syn
 | `pinecone.index_format` | n/a | n/a | yes — any `pg_pinecone` index, native or remote (errors on a non-`pg_pinecone` index); never raises on an old one, see [Index format version](#index-format-version) | no |
 | `pinecone.index_calibration` | n/a | n/a | yes — any `pg_pinecone` index (errors on a non-`pg_pinecone` one); the probe count and pool a native index's scans use, what its build measured and what its sample was made of, `NULL` for a flat, remote or old native one; needs `SELECT` on the table, see [Calibrated defaults](#native-engine-calibrated-defaults) | no |
 | `pinecone.reindex_native_indexes` | n/a | n/a | native-mode indexes below format 3 whose table the caller owns; see [Index format version](#index-format-version) | no |
-| `pinecone.create_index` | n/a | n/a | creates it (`engine` picks `pgvector`/`native`/`remote`; `filter_column` adds a filter key to `native`/`remote`; `partition_column` makes it a namespace per value on `remote`), or attaches an existing Pinecone index (`pinecone_index`, engine `remote` only, not with `partition_column` — see the runbook) | stored key required for `engine => 'remote'` |
-| `pinecone.set_engine` / `promote_index` / `demote_index` | n/a | n/a | switches `native <-> remote` on an existing `pg_pinecone`-AM index (a native one below format 3 refuses with the REINDEX hint), or attaches (`pinecone_index`, `native -> remote` only); `set_engine(.., 'remote', partition_column => ..)` declares a [partition column](#partition-column-on-a-remote-index) as the index goes remote | stored key required to reach `remote` |
+| `pinecone.create_index` | n/a | n/a | creates it (`engine` picks `native` (the default), `pgvector` or `remote`; `filter_column` adds a filter key to `native`/`remote`; `partition_column` makes it a namespace per value on `remote`), or attaches an existing Pinecone index (`pinecone_index`, engine `remote` only, not with `partition_column` — see the runbook) | stored key required for `engine => 'remote'` |
+| `pinecone.set_engine` / `promote_index` / `demote_index` | n/a | n/a | switches `native <-> remote` on an existing `pg_pinecone`-AM index (a native one below format 3 refuses with the REINDEX hint), moves an HNSW index `create_index` built to `native` (`set_engine` only: builds the native index, then drops the HNSW one), or attaches (`pinecone_index`, `native -> remote` only); `set_engine(.., 'remote', partition_column => ..)` declares a [partition column](#partition-column-on-a-remote-index) as the index goes remote | stored key required to reach `remote` |
 | `CREATE INDEX ... USING pinecone` | n/a | n/a | creates it (`mode = 'auto'\|'local'\|'remote'`) | stored key required for `mode = 'remote'`/resolved-remote `auto` |
 | `pinecone.embed` / `embed_batch` / `rerank` | n/a (no table involved) | n/a | n/a | stored key or session GUC |
 | `pinecone.track_docs` / `untrack_docs` / `flush_docs` / `failed_docs` / `retry_failed_docs` / `backfill_docs` / `unpark_docs` | any ordinary table — the document lane is independent of the vector modes, a table can be in both | any | errors on partitioned/inherited tables only | `track_docs`/`untrack_docs`: stored key or session GUC (index create/delete); the worker needs the stored key |
 | `pinecone.search_docs` | `engine => 'local'`: any table (Postgres FTS; an untracked one needs `field`), no key; `'remote'`: a table declared with `track_docs` | any | `engine => 'remote'` or `'local'` | `'remote'` only: stored key or session GUC |
 | `pinecone.headline` | any table's column (declared language, else `english`) | any | any | no |
 | `pinecone.create_doc_index` / `drop_doc_index` / `upsert_docs` / `search_doc_index` | n/a (separate surface) | n/a | n/a | stored key or session GUC |
+
+### `create_index` and its engine
+
+```sql
+pinecone.create_index(tbl regclass, col text, engine text DEFAULT 'native', metric text DEFAULT 'cosine',
+                      index_name text DEFAULT NULL, pinecone_index text DEFAULT NULL,
+                      pinecone_namespace text DEFAULT NULL, attach_unchecked bool DEFAULT false,
+                      filter_column text DEFAULT NULL, partition_column text DEFAULT NULL)
+```
+
+`engine` picks what is built: `'native'` (the default) a `USING pinecone WITH (mode = 'local')` index, `'pgvector'` a
+plain `USING hnsw` index, `'remote'` a `USING pinecone WITH (mode = 'remote')` one. Up to 0.10.0 the default was
+`'pgvector'`: `ALTER EXTENSION pg_pinecone UPDATE` changes it and leaves built indexes alone, so a caller that wants
+HNSW says `engine => 'pgvector'`.
+
+To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')` (it builds the native
+index, then drops the HNSW one: [runbook](runbook.md#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index)).
+`DROP INDEX` of an HNSW index `create_index` built forgets its registry row; 0.10.0 kept it, and the update deletes those
+rows.
 
 ### Index format version
 
@@ -1127,7 +1147,8 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 | `pinecone.create_index: engine '...' is not supported` | `engine` wasn't `'pgvector'`, `'native'`, or `'remote'`. | Pass one of those three. |
 | `pinecone.create_index: ... is already managed with engine '...'` | A second `create_index` call on an already-managed table. | Use `pinecone.set_engine(...)` to switch, or `DROP INDEX` the existing one first. |
 | `pinecone.create_index: engine 'remote' needs a stored API key` | `engine => 'remote'` with no stored key. | `pinecone.set_api_key(...)` first. |
-| `pinecone.set_engine: ...` (names `pinecone.create_index` instead) | Asked to switch to/from `'pgvector'`, or another unsupported transition. | Stand up a fresh index with `create_index(..., engine => ...)`. |
+| `pinecone.set_engine: switching ... is not supported yet` | `pgvector -> remote`, `remote -> pgvector` or `native -> pgvector`. | `set_engine(.., 'native')` first; from `native`, `DROP INDEX` and `create_index(.., engine => 'pgvector')`. |
+| `pinecone.set_engine: ... has N hnsw indexes on "..."` | `set_engine(.., 'native')` on a column with more than one HNSW index. | Drop all but the one to replace. |
 | `pinecone.create_index: pinecone_index only applies to engine 'remote'` / `pinecone.set_engine: pinecone_index only applies to a 'native' -> 'remote' transition` | `pinecone_index` passed with the wrong engine/transition. | Drop `pinecone_index`, or pick `engine => 'remote'` / a `native -> remote` switch. |
 | `pg_pinecone: index '...' does not match ...'s column/opclass` (DETAIL names both shapes) | Attaching an index whose dimension/metric/vector_type doesn't match the column/opclass. | Attach a matching index, or fix the column/opclass. |
 | `pg_pinecone: index '...' namespace '...' does not look like it holds ...'s current rows` (HINT names both counts) | Attaching a namespace whose vector count doesn't match the table's live row count. | Fix the mismatch, or pass `attach_unchecked => true` if you're sure they already match. |
@@ -1139,7 +1160,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 | `pg_pinecone: ... has no primary key` / `has a composite primary key` — pg_pinecone access method | Same PK rule as `pinecone.track`, enforced by `CREATE INDEX ... USING pinecone`. | Add a single-column primary key. |
 | `pg_pinecone: a pg_pinecone access-method index needs a stored API key` | A remote-mode `CREATE INDEX ... USING pinecone` with no stored key. | `pinecone.set_api_key(...)` first. |
 | `pg_pinecone: ... already has a pg_pinecone access-method index` | A second AM index on the same table (the message says "doesn't match" when its vector or filter column differs). | `DROP INDEX` the existing one first. |
-| `pg_pinecone: local mode supports at most N dimensions (a centroid must fit one ...-byte page)` | The vector column is wider than the native engine's page-format-derived cap. | Use `engine = 'pgvector'`/`'remote'` for this column, or reduce its dimension. |
+| `pg_pinecone: local mode supports at most N dimensions (a centroid must fit one ...-byte page)` | The vector column is wider than the native engine's page-format-derived cap. | Reduce the dimension, or use `engine => 'remote'` (pgvector's hnsw stops at 2,000 dimensions too). `create_index` without `engine` builds a native index. |
 | `pg_pinecone: k_bits (...) must be a multiple of 8` | An explicit `k_bits` reloption wasn't byte-aligned. (The value is ignored since 0.10, but a typo is still refused.) | Pass a multiple of 8, or omit it. |
 | `value ... out of bounds for option "target_recall"` (SQLSTATE 22023) | `target_recall` outside 0.5 to 0.999, at `CREATE INDEX` or `ALTER INDEX .. SET`. | Pass a value in range; see [Calibrated defaults](#native-engine-calibrated-defaults). |
 | `pg_pinecone: calibration_queries: ...` (SQLSTATE 22023 for a name that is not `schema.table` or `schema.table(column)` or a table with fewer than 50 distinct queries, 42P01 no such table, 42703 no such or no `vector` column, 42804 a column that is not a `vector` of the indexed dimension or a query of another dimension, 42702 two candidate columns, 42809 not a table or view, or a foreign table, 42501 the owner of the indexed table cannot read it, 55P03 the table is locked, 22000 a non-finite value) | `CREATE INDEX .. WITH (calibration_queries = ..)`, or `ALTER INDEX .. SET` for the name's shape. At a rebuild the same problems are a WARNING (`calibrating on table rows instead`) and `queries_source` reads `fallback`; an error raised while reading (a view's function) is reported by its SQLSTATE, its text in the server log. | Name `schema.table` or `schema.table(column)` of 50 or more queries of the indexed dimension that the owner of the indexed table can `SELECT`; `ALTER INDEX .. RESET (calibration_queries)` drops the setting; see [Calibrated defaults](#native-engine-calibrated-defaults). |

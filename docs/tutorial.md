@@ -78,14 +78,14 @@ One call turns the column into a `native` index. Searches are unchanged — the 
 lifecycle detail, not a query rewrite:
 
 ```sql
-SELECT pinecone.create_index('docs', 'embedding', engine => 'native', metric => 'cosine');
+SELECT pinecone.create_index('docs', 'embedding', metric => 'cosine');
 ```
 
 > A NOTICE may suggest `ALTER TABLE docs ALTER COLUMN embedding SET STORAGE PLAIN`: a 1024-d vector
 > is stored out of line by default, and inline is faster to rescore. Optional here.
 >
-> Leave out `engine` for the default `pgvector` (a plain HNSW index), or pass `'remote'` to push
-> the vectors to Pinecone serverless. The search in step 5 is identical for all three. See
+> `engine` defaults to `'native'`. Pass `engine => 'pgvector'` for a plain HNSW index, or `'remote'` to
+> push the vectors to Pinecone serverless. The search in step 5 is identical for all three. See
 > [Which engine, when](../README.md#which-engine-when).
 
 ## 5. Search

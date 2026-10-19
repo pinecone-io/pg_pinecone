@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **`native` is the default engine of `pinecone.create_index`** (it was `pgvector`). The gate the README tied the
+  default to is met: on the 1M x 768-d box (AWS `r6id.4xlarge`, 2026-10-19, one client, PostgreSQL 17), native takes
+  1.12 / 1.74 ms p50 at recall 0.95 / 0.99 (its calibrated default: 0.958 at 1.29 ms) against hnsw's 1.59 / 3.86 ms;
+  its index is 136 MB against 4,094 MB and builds in 39 s against 62 s, and the filtered cells were already native's.
+  `engine => 'pgvector'` and `'remote'` and `CREATE INDEX` are unchanged: a script that relied on the old default says
+  `engine => 'pgvector'`. Create the index after the bulk load: below
+  `small_n_threshold` (10,000 rows) a native index is flat, an exact scan, until `REINDEX`.
+- **`set_engine(tbl, 'native')` moves an hnsw index `create_index` built to native** (it refused: "not supported
+  yet"). To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')`. It builds
+  the native index while reads keep the hnsw one, drops the hnsw index and gives its name to the native one; the table
+  then leaves `status()` and `topk`, like any native table. A table `track` or `promote` also registered is refused;
+  `pgvector -> remote` goes through `native`.
+- **Fix: `DROP INDEX` of an hnsw index `create_index` built (or `DROP TABLE`) kept its `pinecone.tables` row**, so
+  `create_index` refused the table (`already managed with engine 'pgvector'`). The `sql_drop` event trigger now deletes
+  that row with the table's last hnsw index; a row `track` or `promote` also owns stays.
+- **First in-place upgrade, 0.10.0 to 0.10.1** (`pg_pinecone--0.10.0--0.10.1.sql`): the script replaces
+  `pinecone.create_index` (the new default) and `pinecone._on_sql_drop` (the fix above), and deletes the rows 0.10.0
+  kept for hnsw indexes dropped under it. Indexes already built stay as they are (an hnsw index made under 0.10.0
+  too). Install, restart, then `ALTER EXTENSION pg_pinecone UPDATE`
+  ([runbook](docs/runbook.md#upgrading-from-0100-and-later)): until the update runs, a call without `engine` still
+  builds hnsw.
+
 ## 0.10.0 — 2026-10-17
 
 At a glance:

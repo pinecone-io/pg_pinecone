@@ -4,8 +4,7 @@
 
 From 0.10.0 on, a release upgrades in place: install the new files, restart Postgres, then
 `ALTER EXTENSION pg_pinecone UPDATE` ([runbook](runbook.md#upgrading-from-0100-and-later)). There is no path from
-`pinegres` (renamed in 0.10.0: a reinstall), so v0.10.0 is the first base: until it is tagged, `upgrade-test`
-skips its drill (`pick-base.py derive` prints nothing). Anything that changes
+`pinegres` (renamed in 0.10.0: a reinstall), so v0.10.0 is the first base. Anything that changes
 what `CREATE EXTENSION` builds (a table, column, constraint, index, event trigger, view, function
 signature or body in SQL, an operator class) needs a line in the upgrade script of the cycle, or the
 upgraded catalog stops matching a fresh install. CI says so (`upgrade-test`, below).
@@ -32,7 +31,8 @@ has to follow the restart immediately. Within a cycle:
   symbol from the Rust name (`<name>_wrapper`): don't rename a `#[pg_extern]`, don't change its arguments or
   `RETURNS TABLE` columns. A new SQL signature is a new Rust function (`#[pg_extern(name = "...")]`, an
   overload) next to the old one. `CREATE OR REPLACE` cannot change a result type, a parameter name or drop a
-  default: the diff tool says when it needs `DROP` plus `CREATE`.
+  default: the diff tool says when it needs `DROP` plus `CREATE`. It can change a default's value (it flipped
+  `create_index`'s `engine`) and keeps the function's owner and grants, which `DROP` plus `CREATE` would lose.
 - **A removed `#[pg_extern]` is dropped by the script** (`DROP FUNCTION IF EXISTS`). The script runs after the
   restart, so a call to it errors in between.
 - **A new `#[pg_extern]` is a plain `CREATE FUNCTION` in the script.** Postgres resolves its symbol in the
@@ -100,8 +100,11 @@ Pinecone:
 
 - installs the released tarball (checked against its `.sha256`; a missing one fails the drill unless
   `UPGRADE_ALLOW_UNVERIFIED=1`, for local runs) and builds a fixture (a promoted table, a partition-column table, an
-  access-method remote index, a full-text table, a clustered native index (above its `small_n_threshold`: a
-  flat one has no codes to refuse; 600 rows, so the rebuilt one is calibrated) and a `track()`ed local table; a few hundred rows each; drained);
+  access-method remote index, a full-text table, a clustered native index (600 rows over its
+  `small_n_threshold` of 50: a flat one has no codes and no calibration), a table indexed by `create_index`
+  with `engine` left out (hnsw under 0.10.0), an empty one whose `engine => 'pgvector'` index was dropped (0.10.0
+  kept its registry row) and a `track()`ed local table whose `engine => 'pgvector'` index was dropped too; a few
+  hundred rows each; drained);
 - builds this tree, swaps its files in, restarts Postgres and runs `ALTER EXTENSION pg_pinecone UPDATE`;
 - **catalog**: `pg_dump --schema-only` of the extension's objects (normalized: comments, OIDs, order, the
   stubs of dropped columns) is identical to a fresh `CREATE EXTENSION` in a second database;
@@ -113,11 +116,18 @@ Pinecone:
   `worker_version()` shows `compiled` newer there and equal after the update; a write queued while the
   worker idles drains after it; new writes drain (a new partition included) and the fake holds exactly the
   tables' ids.
-- **access-method indexes**: the remote one the base built reads as format 1 after the update (the word
-  stays what the base wrote) and keeps working; the native one is refused until
-  `pinecone.reindex_native_indexes()` (the planner avoids it with a WARNING, a forced scan and an insert
-  raise 55000, `VACUUM` warns), and after it reads as format 3, scans and takes inserts; a new index writes
-  format 3.
+- **access-method indexes**: each keeps the format word the base wrote and reads through
+  `pinecone.index_format()`. At this tree's format (3, from 0.10.0 on) the native index stays readable, scans,
+  takes inserts and keeps its calibration; `pinecone.reindex_native_indexes()` finds nothing and the update warns
+  of nothing. A new index writes format 3. (An older word would leave the native index refused until the helper
+  rebuilds it: the drill keeps that branch, unexercised, for the next format change.)
+- **default engine**: the index `create_index` built under the base with `engine` left out (hnsw under 0.10.0) is
+  not rebuilt (same `relfilenode`). The function's default is the base's until the update (new library, old
+  catalog) and this tree's (`native`) after: a new `create_index` without `engine` builds a native index the
+  planner uses, `engine => 'pgvector'` an hnsw one. At the end `set_engine(.., 'native')` moves the base's hnsw
+  index to a native one under the same name (the exact top 5, no registry row); the row of an hnsw index
+  `create_index` built survives `REINDEX CONCURRENTLY` and goes with `DROP INDEX` (the update deletes the one the base
+  kept); the `track()`ed table keeps its row.
 
 CI runs restart-first only, on x86_64 Linux: macOS is drilled by hand, linux-arm64 (also a release tarball)
 not at all.

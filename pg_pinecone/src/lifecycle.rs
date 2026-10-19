@@ -86,13 +86,10 @@
 //! (`filter_column`, engines `native` and `remote`; `partition_column` makes
 //! it one namespace per value on `remote`), no BYOC
 //! cloud/region override (reuses `pinecone.am_cloud`/`am_region`, same as the
-//! plain AM path). `set_engine` only performs the two transitions this
-//! module can actually deliver honestly — `native <-> remote` (exactly
-//! [`promote_index`]/[`demote_index]`) — and gives a clear, named "not
-//! supported yet" error for every transition touching `pgvector` (switching
-//! a live `hnsw` index to/from the pg_pinecone AM is a bigger, DROP-and-rebuild
-//! operation this quarter didn't reach; `create_index` remains the way to
-//! stand up a fresh `pgvector`-engine index).
+//! plain AM path). `set_engine` performs `native <-> remote` (exactly
+//! [`promote_index`]/[`demote_index]`) and `pgvector -> native` (a native
+//! build, then the hnsw index is dropped), and gives a clear, named "not
+//! supported yet" error for the other transitions touching `pgvector`.
 
 use pgrx::{PgRelation, prelude::*, spi::Spi};
 
@@ -1652,11 +1649,101 @@ pub(crate) fn set_engine(
             };
             demote_index(idx);
         }
+        ("pgvector", "native") => {
+            // Closed before the DDL on it (`CheckTableNotInUse`), as in `create_index`.
+            drop(target);
+            pgvector_to_native(heap_relid, &display);
+        }
+        ("pgvector", "remote") | ("remote", "pgvector") => error!(
+            "pinecone.set_engine: switching {display} from '{current}' to '{engine}' is not \
+             supported yet — set_engine('{display}', 'native') first"
+        ),
         _ => error!(
             "pinecone.set_engine: switching {display} from '{current}' to '{engine}' is not \
-             supported yet — only 'native' <-> 'remote' are (via promote_index/demote_index); \
-             switching to/from 'pgvector' needs a fresh pinecone.create_index(..., engine => \
-             '{engine}') for now"
+             supported yet — DROP INDEX the native index, then pinecone.create_index(.., engine \
+             => '{engine}')"
         ),
     }
+}
+
+/// `pgvector -> native`: builds the native index while reads keep the hnsw one, then drops the
+/// hnsw index, gives its name to the native one and deletes the registry row (a native index has
+/// none). Only for the row `create_index` made: one `track` or `promote` also owns (or a demoted
+/// one that still names its Pinecone index) is refused.
+fn pgvector_to_native(heap_relid: pg_sys::Oid, display: &str) {
+    // Writes wait and reads go on, as under CREATE INDEX; a second set_engine waits here instead
+    // of deadlocking at the DROP INDEX.
+    unsafe {
+        pg_sys::LockRelationOid(
+            heap_relid,
+            pg_sys::ShareRowExclusiveLock as pg_sys::LOCKMODE,
+        )
+    };
+    let Some(row) =
+        registry::lookup(heap_relid).filter(|r| r.engine.as_deref() == Some("pgvector"))
+    else {
+        error!("pinecone.set_engine: {display} changed meanwhile — run it again");
+    };
+    if row.synced_by != "engine" || row.mode != "local" || row.index_name.is_some() {
+        error!(
+            "pinecone.set_engine: {display} is also registered by pinecone.track or promote \
+             (synced_by '{}', mode '{}') — demote and untrack it, DROP INDEX the hnsw index, then \
+             pinecone.create_index(..)",
+            row.synced_by, row.mode
+        );
+    }
+    if catalog::relkind(heap_relid) == Some('p') {
+        error!(
+            "pinecone.set_engine: {display} is partitioned — moving its hnsw index is not supported"
+        );
+    }
+    if catalog::column_type(heap_relid, &row.vector_column).is_none() {
+        error!(
+            "pinecone.set_engine: column \"{}\" not found on {display}",
+            row.vector_column
+        );
+    }
+    let (schema, table) = catalog::resolve_table_name(heap_relid)
+        .unwrap_or_else(|| error!("pinecone.set_engine: could not resolve {display}"));
+    let hnsw = catalog::hnsw_index_names(heap_relid, &row.vector_column);
+    if hnsw.len() > 1 {
+        error!(
+            "pinecone.set_engine: {display} has {} hnsw indexes on \"{}\" ({}) — drop all but one \
+             first",
+            hnsw.len(),
+            row.vector_column,
+            hnsw.join(", ")
+        );
+    }
+    let opclass = opclass_for_metric(&row.metric, "pinecone.set_engine");
+    let run = |sql: String| Spi::run(&sql).unwrap_or_else(|e| error!("pinecone.set_engine: {e}"));
+    run(format!(
+        "CREATE INDEX ON {} USING pinecone ({} {opclass}) WITH (mode = 'local')",
+        pgrx::spi::quote_qualified_identifier(&schema, &table),
+        pgrx::spi::quote_identifier(&row.vector_column)
+    ));
+    let built = catalog::pg_pinecone_am_index_for_table(heap_relid)
+        .and_then(catalog::resolve_table_name)
+        .map(|(_, name)| name)
+        .expect("the CREATE INDEX above built it");
+    let name = match hnsw.into_iter().next() {
+        Some(old) => {
+            run(format!(
+                "DROP INDEX {}",
+                pgrx::spi::quote_qualified_identifier(&schema, &old)
+            ));
+            old
+        }
+        None => default_pg_index_name(&table, &row.vector_column),
+    };
+    if built != name {
+        run(format!(
+            "ALTER INDEX {} RENAME TO {}",
+            pgrx::spi::quote_qualified_identifier(&schema, &built),
+            pgrx::spi::quote_identifier(&name)
+        ));
+    }
+    // As the extension's owner, like `_on_sql_drop` (which usually took the row already): the
+    // caller owns the table and needs no grant on the registry for it.
+    crate::docs_registry::as_owner(|| registry::delete(heap_relid));
 }

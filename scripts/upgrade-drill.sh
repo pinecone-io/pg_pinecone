@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # In-place upgrade drill (docs/contributing.md): installs release <base-tag> from its tarball, loads a
-# fixture (promoted, partitioned, access-method remote, full-text, native and local tables) against a fake
+# fixture (promoted, partitioned, access-method remote, full-text, native, hnsw and local tables) against a fake
 # Pinecone (scripts/upgrade/fake_pinecone: control, vector, namespace and document planes), builds this tree
 # with `cargo pgrx package`, restarts onto it, runs ALTER EXTENSION pg_pinecone UPDATE and proves the result
 # equals a fresh install of this tree (pg_dump of the extension's objects, normalized) and still works.
-# The access-method indexes the base built read as format 1: the remote one keeps working, the native one
-# (clustered: a flat one has no codes to refuse) is offline until pinecone.reindex_native_indexes() rebuilds
-# it as format 3 with a calibration (planner walks away with a WARNING, a forced scan and an insert raise 55000,
-# VACUUM warns, pinecone.index_calibration() reports nothing until the rebuild, then the calibrated pair).
+# The access-method indexes keep the format word the base wrote. At this tree's format (HEAD_FORMAT_WORD) the
+# native index stays readable and nothing is rebuilt; an older word leaves it offline until
+# pinecone.reindex_native_indexes() (the planner walks away with a WARNING, a forced scan and an insert raise
+# 55000, VACUUM warns, pinecone.index_calibration() reports nothing until the rebuild). No such base exists yet.
+# create_index's default: what the base's default built is untouched, the catalog keeps the base's default until
+# the update, then a new create_index builds native and `engine => 'pgvector'` still builds hnsw. Then
+# set_engine(.., 'native') moves the base's hnsw index to native, a DROP INDEX of an hnsw index create_index built
+# leaves no registry row, and the update deleted the one the base kept (a row track() owns stays).
 #   ./scripts/upgrade-drill.sh <base-tag> [pg_config]
 # Exits non-zero on the first difference. Needs gh (tarball download), cargo-pgrx, python3, curl; no
 # Pinecone key is ever set. Replaces pg_pinecone files in <pg_config>'s pkglibdir/sharedir (via sudo if
@@ -228,7 +232,7 @@ start_fake() {
 }
 
 LANE_TABLES="('fx.t_trig', 'fx.t_am', 'fx.t_fts', 'fx.t_part')"
-STATUS_TABLES="('fx.t_trig', 'fx.t_am', 'fx.t_fts', 'fx.t_part', 'fx.t_loc')"
+STATUS_TABLES="('fx.t_trig', 'fx.t_am', 'fx.t_fts', 'fx.t_part', 'fx.t_loc', 'fx.t_dflt')"
 LANES_READY="SELECT count(*) = 4 AND bool_and(CASE WHEN mode = 'docs'
     THEN docs_backlog = 0 AND docs_backfill_done = docs_backfill_total AND docs_queue_state = 'idle'
     ELSE mode = 'remote' AND backlog = 0 AND queue_state = 'idle' END)
@@ -269,10 +273,20 @@ CREATE TABLE fx.t_loc (id bigint PRIMARY KEY, embedding vector(8));
 INSERT INTO fx.t_loc
   SELECT g, (SELECT array_agg(((g*13 + k*5) % 31 - 15)::float4 + 0.01*k) FROM generate_series(1,8) k)::vector
   FROM generate_series(1,60) g;
+CREATE TABLE fx.t_dflt (id bigint PRIMARY KEY, embedding vector(8));
+INSERT INTO fx.t_dflt
+  SELECT g, (SELECT array_agg(((g*17 + k*7) % 23 - 11)::float4 + 0.01*k) FROM generate_series(1,8) k)::vector
+  FROM generate_series(1,200) g;
+CREATE TABLE fx.t_gone (id bigint PRIMARY KEY, embedding vector(8));
 SELECT pinecone.promote('fx.t_trig', metadata_columns => ARRAY['tenant_id']);
 SELECT pinecone.promote('fx.t_part', partition_column => 'tenant_id');
 SELECT pinecone.track('fx.t_loc');
+SELECT pinecone.create_index('fx.t_loc', 'embedding', engine => 'pgvector');
+DROP INDEX fx.t_loc_embedding_pinecone_idx;   -- track() owns the row: it stays
 SELECT pinecone.create_index('fx.t_am', 'embedding', engine => 'remote');
+SELECT pinecone.create_index('fx.t_dflt', 'embedding');   -- engine left out: what the base's default builds
+SELECT pinecone.create_index('fx.t_gone', 'embedding', engine => 'pgvector');
+DROP INDEX fx.t_gone_embedding_pinecone_idx;   -- 0.10.0 keeps its registry row
 SELECT pinecone.track_docs('fx.t_fts', '["title","body"]'::jsonb, metadata_columns => ARRAY['tenant_id']);
 CREATE INDEX t_nat_idx ON fx.t_nat USING pinecone (embedding vector_cosine_ops, tenant_id int4_ops) WITH (mode = 'local', small_n_threshold = 50);
 SELECT pinecone.schedule_maintenance('fx.t_nat_idx', 0.2);
@@ -318,6 +332,8 @@ FORMAT_WORD_AT=108
 # What a build by this tree writes there: format 3 in the low byte and the list page layout (1) in the next
 # (local/metapage.rs Stored::CURRENT), 3 + 256.
 HEAD_FORMAT_WORD=259
+# What `create_index` builds in this tree when `engine` is left out.
+HEAD_DEFAULT_ENGINE=native
 
 format_word() {
     sql -c "SELECT get_byte(p, $FORMAT_WORD_AT) + (get_byte(p, $FORMAT_WORD_AT + 1) << 8)
@@ -337,6 +353,30 @@ index_format_of() {
 # no default reported | nothing measured | samples | no target: `t|t|0|t` for an index with no calibration
 calibration_of() {
     scalar "SELECT format('%s|%s|%s|%s', nprobe IS NULL, calib_nprobe IS NULL, calib_samples, target_recall IS NULL) FROM pinecone.index_calibration('$1')"
+}
+
+# What the installed catalog says `create_index` builds when `engine` is left out.
+create_index_default() {
+    scalar "SELECT substring(pg_get_function_arguments('pinecone.create_index'::regproc) FROM 'engine text DEFAULT ''([a-z]+)''')"
+}
+
+# The access methods of a table's indexes other than its primary key, e.g. `hnsw` or `pinecone`.
+index_ams() {
+    scalar "SELECT coalesce(string_agg(a.amname, ',' ORDER BY a.amname), '') FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam
+        WHERE i.indrelid = '$1'::regclass AND NOT i.indisprimary"
+}
+
+# pg_class.relfilenode of the two indexes the base built that the update must not rebuild: REINDEX changes it.
+index_files() {
+    scalar "SELECT string_agg(relname || ':' || relfilenode, ',' ORDER BY relname) FROM pg_class
+        WHERE relnamespace = 'fx'::regnamespace AND relname IN ('t_dflt_embedding_pinecone_idx', 't_nat_idx')"
+}
+
+assert_indexes_not_rebuilt() {
+    [ "$(index_files)" = "$INDEX_FILES_BEFORE" ] \
+        || fail "$1: the update rebuilt an index the base built (relfilenode $INDEX_FILES_BEFORE, now $(index_files))"
+    pass "$1: neither fx.t_dflt's index nor fx.t_nat_idx was rebuilt (same relfilenode)"
 }
 
 version_lt() {
@@ -371,8 +411,8 @@ snapshot() {
         [ -s "$dir/native.txt" ] || fail "$1: the native search came back empty"
     fi
     fixture_schema "$dir/fixture-schema.txt"
-    [ "$(grep -c . "$dir/status.txt")" -eq 5 ] || fail "$1: status() should list the four Pinecone lanes and the local table"
-    for object in "TRIGGER fx.t_part pg_pinecone_sync_ins" "TRIGGER fx.t_fts pg_pinecone_docs_ins" "INDEX fx.t_am_embedding_pinecone_idx" "INDEX fx.t_nat_idx"; do
+    [ "$(grep -c . "$dir/status.txt")" -eq "$STATUS_ROWS" ] || fail "$1: status() should list $STATUS_ROWS of the fixture's tables"
+    for object in "TRIGGER fx.t_part pg_pinecone_sync_ins" "TRIGGER fx.t_fts pg_pinecone_docs_ins" "INDEX fx.t_am_embedding_pinecone_idx" "INDEX fx.t_nat_idx" "INDEX fx.t_dflt_embedding_pinecone_idx"; do
         grep -q "^== $object\$" "$dir/fixture-schema.txt" || fail "$1: the dump of the fixture schema lacks $object"
     done
     for lane in fx.t_trig fx.t_am fx.t_part; do
@@ -391,8 +431,9 @@ snapshot() {
 }
 
 assert_same_snapshot() {
-    local what="$1" f
-    for f in status.txt readiness.txt maintenance.txt searches.txt fixture-schema.txt; do
+    local what="$1" f files="status.txt readiness.txt maintenance.txt searches.txt fixture-schema.txt"
+    [ ! -f "$WORK/$what/native.txt" ] || files="$files native.txt"
+    for f in $files; do
         diff -u "$WORK/before/$f" "$WORK/$what/$f" > "$WORK/$what/$f.diff" \
             || { cat "$WORK/$what/$f.diff" >&2; fail "$what: $f differs from the pre-upgrade snapshot"; }
     done
@@ -446,8 +487,8 @@ drain_queued_write() {
     wait_until 60 "the delete to drain" "$LANES_READY"
 }
 
-# Indexes the base built read as format 1 (a zero word: absent) and keep the word they were built with: the
-# remote one stays readable, the native one is not (its sketch codes are offline until REINDEX).
+# Indexes the base built keep the format word they were built with (a zero word reads as format 1). All stay
+# readable at this tree's format; a native index with an older word is offline until REINDEX.
 assert_formats_unchanged() {
     local label="$1" index
     # shellcheck disable=SC2086
@@ -457,14 +498,14 @@ assert_formats_unchanged() {
     for index in $FORMAT_INDEXES; do
         echo "$index $(index_format_of "$index")"
     done > "$WORK/format-reads-$label.txt"
-    awk '{ print $1, (($2 > 1 ? $2 : 1) ($1 ~ /t_nat_idx$/ ? "|f" : "|t")) }' "$WORK/format-words-before.txt" \
+    awk -v stale="$NATIVE_STALE" '{ fmt = ($2 % 256 > 0 ? $2 % 256 : 1); print $1, fmt "|" (stale == 1 && $1 ~ /t_nat_idx$/ ? "f" : "t") }' "$WORK/format-words-before.txt" \
         | diff -u - "$WORK/format-reads-$label.txt" >&2 \
-        || fail "$label: pinecone.index_format() does not report the base's remote index as readable and its native one as not, a zero word as format 1"
-    pass "$label: the access-method indexes $BASE_VERSION built read through pinecone.index_format() with the format word they were built with (the remote one readable, the native one offline)"
+        || fail "$label: pinecone.index_format() does not report the format word the base wrote (a zero word as format 1), the native index readable only at this tree's format"
+    pass "$label: the access-method indexes $BASE_VERSION built read through pinecone.index_format() with the format word they were built with ($([ "$NATIVE_STALE" = 1 ] && echo "the remote one readable, the native one offline" || echo "both readable"))"
 }
 
-# REINDEX writes this release's format 3, and so does a new index (the native index the helper rebuilt
-# already did).
+# REINDEX writes this release's format 3, and so does a new index (the base's native index has it too: built
+# so, or rebuilt by the helper).
 assert_formats_rebuilt() {
     local index
     sql -c "CREATE INDEX t_nat_idx_fresh ON fx.t_nat USING pinecone (embedding vector_l2_ops) WITH (mode = 'local', small_n_threshold = 50)" \
@@ -475,7 +516,7 @@ assert_formats_rebuilt() {
         [ "$(index_format_of "$index")" = "3|t" ] || fail "$index is not format 3 after a build by $HEAD_VERSION: $(index_format_of "$index")"
         [ "$(format_word "$index")" = "$HEAD_FORMAT_WORD" ] || fail "$index stores format word $(format_word "$index") after a build by $HEAD_VERSION, not $HEAD_FORMAT_WORD"
     done
-    pass "a new index, the helper's REINDEX of the base's native index and the REINDEX of its remote access-method index write format 3"
+    pass "every access-method index reads format 3 with word $HEAD_FORMAT_WORD: a new one, the base's native one and the REINDEXed remote one"
 }
 
 # The native index the base built (clustered) is offline from the restart until REINDEX, per entry point.
@@ -518,6 +559,103 @@ assert_native_refused() {
     pass "$label: the native index $BASE_VERSION built is offline: the planner walks away with a WARNING, a forced scan and an insert raise 55000, VACUUM warns and completes"
 }
 
+# The native index reports the calibration its build measured (the minimum sample of 50 on this fixture, the
+# default target of 0.95).
+assert_native_calibrated() {
+    [ "$(scalar "SELECT calib_samples >= 50 AND calib_nprobe >= 1 AND calib_pool >= 100 AND calib_recall > 0 AND abs(target_recall - 0.95) < 1e-6 AND nprobe = calib_nprobe AND pool = calib_pool FROM pinecone.index_calibration('fx.t_nat_idx')")" = t ] \
+        || fail "$1 reports no calibration: $(scalar "SELECT row(i.*) FROM pinecone.index_calibration('fx.t_nat_idx') i")"
+}
+
+# A native index at this tree's format stays readable through the restart and the update: index_format() says
+# so, VACUUM and maintenance_status() stay quiet (snapshot checks the planner and the search).
+assert_native_readable() {
+    local label="$1" out
+    out="$(sql -c "VACUUM fx.t_nat" -c "SELECT * FROM pinecone.maintenance_status()" 2>&1)" \
+        || fail "$label: VACUUM or maintenance_status() failed over the native index: $out"
+    ! printf '%s\n' "$out" | grep -q '^WARNING:' || fail "$label: the native index $BASE_VERSION built drew a WARNING: $out"
+    [ "$(index_format_of fx.t_nat_idx)" = "3|t" ] \
+        || fail "$label: pinecone.index_format() reports $(index_format_of fx.t_nat_idx) for the native index, not 3|t"
+    pass "$label: the native index $BASE_VERSION built stays readable (format 3, VACUUM and maintenance_status() are quiet)"
+}
+
+# At this tree's format pinecone.reindex_native_indexes() has nothing to rebuild: it lists nothing, a second call
+# is a no-op, and the index keeps the format word and the calibration its own build wrote.
+assert_native_current() {
+    [ "$(scalar "SELECT count(*) FROM pinecone.reindex_native_indexes(true)")" = 0 ] \
+        || fail "reindex_native_indexes(dry_run => true) lists an index although the native index is at this tree's format"
+    [ "$(scalar "SELECT count(*) FROM pinecone.reindex_native_indexes()")" = 0 ] \
+        || fail "reindex_native_indexes() rebuilt an index although the native index is at this tree's format"
+    [ "$(index_format_of fx.t_nat_idx)" = "3|t" ] || fail "the native index is $(index_format_of fx.t_nat_idx), not 3|t"
+    [ "$(format_word fx.t_nat_idx)" = "$HEAD_FORMAT_WORD" ] || fail "the native index's format word changed"
+    [ "$(scalar "SELECT row(i.*) FROM pinecone.index_calibration('fx.t_nat_idx') i")" = "$CALIB_BEFORE" ] \
+        || fail "the native index's calibration changed: $CALIB_BEFORE -> $(scalar "SELECT row(i.*) FROM pinecone.index_calibration('fx.t_nat_idx') i")"
+    [ "$(PGOPTIONS='-c enable_seqscan=off' scalar "SELECT count(*) FROM (SELECT id FROM fx.t_nat WHERE tenant_id = 2 ORDER BY embedding <=> $QUERY_VECTOR LIMIT 5) q")" = 5 ] \
+        || fail "the native index does not answer"
+    pass "reindex_native_indexes() finds nothing to rebuild: the native index $BASE_VERSION built still scans and keeps its calibration"
+}
+
+# create_index without `engine`: the base's default until the update (asserted in the window), this tree's after.
+# The index the base's default built stays what it was; a new one is native, and `engine => 'pgvector'` is hnsw.
+assert_create_index_default() {
+    local plan
+    [ "$(create_index_default)" = "$HEAD_DEFAULT_ENGINE" ] \
+        || fail "after the update create_index defaults to '$(create_index_default)', not '$HEAD_DEFAULT_ENGINE'"
+    [ "$(index_ams fx.t_dflt)" = "$DFLT_AMS_BEFORE" ] \
+        || fail "the update changed the index the base's create_index default built on fx.t_dflt: $DFLT_AMS_BEFORE -> $(index_ams fx.t_dflt)"
+    sql >/dev/null <<'SQL'
+CREATE TABLE fx.t_new (id bigint PRIMARY KEY, embedding vector(8));
+INSERT INTO fx.t_new
+  SELECT g, (SELECT array_agg(((g*3 + k*5) % 13 - 6)::float4 + 0.01*k) FROM generate_series(1,8) k)::vector
+  FROM generate_series(1,60) g;
+CREATE TABLE fx.t_new_hnsw (LIKE fx.t_new INCLUDING ALL);
+INSERT INTO fx.t_new_hnsw SELECT * FROM fx.t_new;
+SELECT pinecone.create_index('fx.t_new', 'embedding');
+SELECT pinecone.create_index('fx.t_new_hnsw', 'embedding', engine => 'pgvector');
+SQL
+    [ "$(index_ams fx.t_new)" = pinecone ] || fail "create_index without engine built '$(index_ams fx.t_new)', not a native (pinecone) index"
+    [ "$(index_ams fx.t_new_hnsw)" = hnsw ] || fail "create_index(engine => 'pgvector') built '$(index_ams fx.t_new_hnsw)', not hnsw"
+    [ "$(index_format_of fx.t_new_embedding_pinecone_idx)" = "3|t" ] \
+        || fail "the native index create_index built is $(index_format_of fx.t_new_embedding_pinecone_idx), not 3|t"
+    plan="$(PGOPTIONS='-c enable_seqscan=off' sql -c "EXPLAIN (COSTS OFF) SELECT id FROM fx.t_new ORDER BY embedding <=> $QUERY_VECTOR LIMIT 5")"
+    printf '%s' "$plan" | grep -q 'Index Scan using t_new_embedding_pinecone_idx' \
+        || fail "the planner does not use the native index create_index built: $plan"
+    pass "after the update: create_index without engine builds a native index the planner uses, engine => 'pgvector' builds hnsw, and fx.t_dflt (built by the base's default: $DFLT_AMS_BEFORE) is untouched"
+}
+
+# The rows of hnsw indexes create_index built: REINDEX CONCURRENTLY keeps one, DROP INDEX forgets it (the update
+# deleted the one the base left for fx.t_gone; fx.t_loc's is track()'s), and set_engine(.., 'native') moves fx.t_dflt
+# to a native index under the same name.
+assert_pgvector_rows() {
+    local exact plan
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_gone'::regclass")" = 0 ] \
+        || fail "the update kept the registry row of fx.t_gone, whose hnsw index was dropped under $BASE_VERSION"
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_loc'::regclass AND engine = 'pgvector'")" = 1 ] \
+        || fail "the update deleted the registry row of fx.t_loc, which track() owns"
+    sql -c "REINDEX INDEX CONCURRENTLY fx.t_new_hnsw_embedding_pinecone_idx" >/dev/null
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_new_hnsw'::regclass")" = 1 ] \
+        || fail "REINDEX CONCURRENTLY of an hnsw index create_index built lost its registry row"
+    sql -c "SELECT pinecone.create_index('fx.t_gone', 'embedding')" -c "DROP INDEX fx.t_new_hnsw_embedding_pinecone_idx" >/dev/null
+    [ "$(index_ams fx.t_gone)" = pinecone ] || fail "create_index on fx.t_gone built '$(index_ams fx.t_gone)', not a native index"
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_new_hnsw'::regclass")" = 0 ] \
+        || fail "DROP INDEX of an hnsw index create_index built left its registry row"
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_loc'::regclass AND engine = 'pgvector'")" = 1 ] \
+        || fail "a DROP INDEX after the update deleted the registry row of fx.t_loc, which track() owns"
+    sql -c "SELECT pinecone.create_index('fx.t_new_hnsw', 'embedding')" >/dev/null
+    sql -c "SELECT pinecone.set_engine('fx.t_dflt', 'native')" -c "SELECT pinecone.set_engine('fx.t_dflt', 'native')" >/dev/null
+    [ "$(index_ams fx.t_dflt)" = pinecone ] || fail "set_engine(.., 'native') left fx.t_dflt with '$(index_ams fx.t_dflt)'"
+    [ "$(index_format_of fx.t_dflt_embedding_pinecone_idx)" = "3|t" ] \
+        || fail "the native index set_engine built on fx.t_dflt is $(index_format_of fx.t_dflt_embedding_pinecone_idx), not 3|t"
+    [ "$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_dflt'::regclass")" = 0 ] \
+        || fail "set_engine(.., 'native') kept fx.t_dflt's registry row"
+    plan="$(PGOPTIONS='-c enable_seqscan=off' sql -c "EXPLAIN (COSTS OFF) SELECT id FROM fx.t_dflt ORDER BY embedding <=> $QUERY_VECTOR LIMIT 5")"
+    printf '%s' "$plan" | grep -q 'Index Scan using t_dflt_embedding_pinecone_idx' \
+        || fail "the planner does not use the native index set_engine built on fx.t_dflt: $plan"
+    exact="SELECT string_agg(round(d::numeric, 6)::text, ',' ORDER BY d) FROM (SELECT embedding <=> $QUERY_VECTOR AS d FROM fx.t_dflt ORDER BY 1 LIMIT 5) q"
+    [ "$(PGOPTIONS='-c enable_seqscan=off' scalar "$exact")" = "$(PGOPTIONS='-c enable_indexscan=off' scalar "$exact")" ] \
+        || fail "the native index on fx.t_dflt does not return the exact top 5"
+    pass "after the update: an hnsw index create_index built keeps its registry row through REINDEX CONCURRENTLY and loses it with DROP INDEX (the one $BASE_VERSION left for fx.t_gone is gone, fx.t_loc's stays), and set_engine(.., 'native') moved fx.t_dflt to a native index under the same name that returns the exact top 5"
+}
+
 # pinecone.reindex_native_indexes() rebuilds exactly the native index (a dry run only lists it as stale), the
 # remote one is never touched, a second call is a no-op, and the rebuilt index scans and takes inserts.
 assert_native_repaired() {
@@ -531,8 +669,7 @@ assert_native_repaired() {
     [ "$(scalar "SELECT count(*) FROM pinecone.reindex_native_indexes()")" = 0 ] || fail "a second reindex_native_indexes() was not a no-op"
     [ "$(index_format_of fx.t_am_embedding_pinecone_idx)" = "1|t" ] \
         || fail "reindex_native_indexes() touched the remote access-method index: $(index_format_of fx.t_am_embedding_pinecone_idx)"
-    [ "$(scalar "SELECT calib_samples >= 50 AND calib_nprobe >= 1 AND calib_pool >= 100 AND calib_recall > 0 AND abs(target_recall - 0.95) < 1e-6 AND nprobe = calib_nprobe AND pool = calib_pool FROM pinecone.index_calibration('fx.t_nat_idx')")" = t ] \
-        || fail "the rebuilt native index reports no calibration: $(scalar "SELECT row(i.*) FROM pinecone.index_calibration('fx.t_nat_idx') i")"
+    assert_native_calibrated "the rebuilt native index"
     [ "$(calibration_of fx.t_am_embedding_pinecone_idx)" = "t|t|0|t" ] \
         || fail "pinecone.index_calibration() reports a calibration for the remote access-method index: $(calibration_of fx.t_am_embedding_pinecone_idx)"
     snapshot reindexed native
@@ -610,6 +747,9 @@ load_fixture
     || fail "the fixture database is not at $BASE_VERSION"
 assert_worker_version "$BASE_VERSION" "$BASE_VERSION" f
 assert_fake_matches_heap "before the upgrade"
+# status() lists the registry's rows: the four lanes, the local table and fx.t_dflt when its index is hnsw (a native index has no row)
+STATUS_ROWS=5
+[ "$(index_ams fx.t_dflt)" != hnsw ] || STATUS_ROWS=6
 snapshot before native
 sql -c "CREATE EXTENSION IF NOT EXISTS pageinspect" >/dev/null
 # shellcheck disable=SC2086
@@ -619,15 +759,46 @@ if version_lt "$BASE_VERSION" 0.10.0; then
         || { cat "$WORK/format-words-before.txt" >&2; fail "an access-method index built by $BASE_VERSION has a nonzero format word"; }
     pass "the access-method indexes $BASE_VERSION built have no format word (zero in the page)"
 fi
+# A native index older than this tree's format is offline until REINDEX; one at it is not.
+NATIVE_STALE=0
+[ "$(format_word fx.t_nat_idx)" = "$HEAD_FORMAT_WORD" ] || NATIVE_STALE=1
+SNAP_NATIVE=native
+[ "$NATIVE_STALE" = 0 ] || SNAP_NATIVE=
+# What create_index builds with `engine` left out, and what that built on fx.t_dflt.
+BASE_DEFAULT_ENGINE="$(create_index_default)"
+[ -n "$BASE_DEFAULT_ENGINE" ] || fail "could not read the engine default of create_index in the base's catalog"
+DFLT_AMS_BEFORE="$(index_ams fx.t_dflt)"
+[ "$BASE_DEFAULT_ENGINE" != pgvector ] || [ "$DFLT_AMS_BEFORE" = hnsw ] \
+    || fail "create_index without engine built '$DFLT_AMS_BEFORE' on fx.t_dflt although the base's default is pgvector"
+pass "the base's create_index defaults to '$BASE_DEFAULT_ENGINE': the index on fx.t_dflt is $DFLT_AMS_BEFORE"
+GONE_ROW_BEFORE="$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_gone'::regclass")"
+GONE_ROW_EXPECTED=0
+! version_lt "$BASE_VERSION" 0.10.1 || GONE_ROW_EXPECTED=1
+[ "$GONE_ROW_BEFORE" = "$GONE_ROW_EXPECTED" ] \
+    || fail "DROP INDEX of an hnsw index create_index built under $BASE_VERSION left $GONE_ROW_BEFORE registry rows, not $GONE_ROW_EXPECTED"
+pass "DROP INDEX of an hnsw index create_index built under $BASE_VERSION left $GONE_ROW_BEFORE registry row (fx.t_gone)"
+INDEX_FILES_BEFORE="$(index_files)"
+CALIB_BEFORE=
+if [ "$NATIVE_STALE" = 0 ]; then
+    assert_native_calibrated "the native index the base built"
+    CALIB_BEFORE="$(scalar "SELECT row(i.*) FROM pinecone.index_calibration('fx.t_nat_idx') i")"
+fi
 
 step "install $HEAD_VERSION files into the running server's install ($ORDER)"
 install_head_while_running
 if [ "$ORDER" = restart-first ]; then
     restart_pg
     assert_worker_version "$HEAD_VERSION" "$BASE_VERSION" t
-    snapshot window
+    snapshot window $SNAP_NATIVE
     assert_same_snapshot window
-    assert_native_refused "in the window between restart and update"
+    if [ "$NATIVE_STALE" = 1 ]; then
+        assert_native_refused "in the window between restart and update"
+    else
+        assert_native_readable "in the window between restart and update"
+    fi
+    [ "$(create_index_default)" = "$BASE_DEFAULT_ENGINE" ] \
+        || fail "in the window between restart and update create_index defaults to '$(create_index_default)', not the base's '$BASE_DEFAULT_ENGINE'"
+    pass "in the window between restart and update: create_index still defaults to '$BASE_DEFAULT_ENGINE' (the new library serves the old catalog)"
     queue_write_while_idle
 fi
 sql -c "ALTER EXTENSION pg_pinecone UPDATE" >/dev/null 2> "$WORK/update.stderr" \
@@ -635,27 +806,44 @@ sql -c "ALTER EXTENSION pg_pinecone UPDATE" >/dev/null 2> "$WORK/update.stderr" 
 [ "$(scalar "SELECT extversion FROM pg_extension WHERE extname = 'pg_pinecone'")" = "$HEAD_VERSION" ] \
     || fail "ALTER EXTENSION pg_pinecone UPDATE did not reach $HEAD_VERSION"
 pass "ALTER EXTENSION pg_pinecone UPDATE: $BASE_VERSION -> $HEAD_VERSION"
-grep -q "WARNING:  pg_pinecone 0.10: native indexes built before format 3 are offline until REINDEX: fx.t_nat_idx$" "$WORK/update.stderr" \
-    || { cat "$WORK/update.stderr" >&2; fail "the update did not list the native index that needs REINDEX in a WARNING"; }
-pass "the update's WARNING lists the native index that needs REINDEX (and only it)"
+if [ "$NATIVE_STALE" = 1 ]; then
+    grep -q "WARNING:  pg_pinecone 0.10: native indexes built before format 3 are offline until REINDEX: fx.t_nat_idx$" "$WORK/update.stderr" \
+        || { cat "$WORK/update.stderr" >&2; fail "the update did not list the native index that needs REINDEX in a WARNING"; }
+    pass "the update's WARNING lists the native index that needs REINDEX (and only it)"
+else
+    ! grep -q '^WARNING:' "$WORK/update.stderr" \
+        || { cat "$WORK/update.stderr" >&2; fail "the update warned, but every index the base built is at this tree's format"; }
+    pass "the update warns of nothing (every index $BASE_VERSION built is at this tree's format)"
+fi
 if [ "$ORDER" = update-first ]; then
     assert_worker_version "$BASE_VERSION" "$HEAD_VERSION" t
-    snapshot window
+    snapshot window $SNAP_NATIVE
     assert_same_snapshot window
     queue_write_while_idle
     restart_pg
 fi
 assert_worker_version "$HEAD_VERSION" "$HEAD_VERSION" f
 drain_queued_write
-snapshot after
+snapshot after $SNAP_NATIVE
 assert_same_snapshot after
 assert_same_catalog
 assert_formats_unchanged "after the upgrade"
-assert_native_refused "after the update" format
+assert_indexes_not_rebuilt "after the update"
+if [ "$NATIVE_STALE" = 1 ]; then
+    assert_native_refused "after the update" format
+else
+    assert_native_readable "after the update"
+fi
+assert_create_index_default
 new_writes_drain
 assert_formats_unchanged "after new writes"
-assert_native_repaired
+if [ "$NATIVE_STALE" = 1 ]; then
+    assert_native_repaired
+else
+    assert_native_current
+fi
 native_writes
 assert_formats_rebuilt
+assert_pgvector_rows
 
 pass "in-place upgrade $BASE_TAG -> $HEAD_VERSION ($ORDER) on $PG_VERSION, ${SECONDS}s"

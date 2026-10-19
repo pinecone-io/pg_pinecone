@@ -598,7 +598,8 @@ extension_sql!(
 // caller-controlled: an unrelated drop's `objid` simply matches no
 // `am_index_relid` row (`IF FOUND` false), a pure no-op, so a non-owner
 // triggering this on their own objects can't use it to read or delete
-// another table's registry/outbox rows. `EXECUTE` is still `REVOKE`d from
+// another table's registry/outbox rows (the pgvector-engine purge only takes
+// rows whose hnsw index is already gone). `EXECUTE` is still `REVOKE`d from
 // `PUBLIC` below (event-trigger functions can't be called directly via SQL
 // regardless — `event_trigger` is a non-callable pseudo-type — but this
 // matches `_sync_trigger`'s own belt-and-suspenders `REVOKE`).
@@ -606,7 +607,8 @@ extension_sql!(
 // Runs on every `sql_drop` in the database, not just ones touching a
 // pg_pinecone-AM index (event triggers have no narrower granularity than an
 // event name) — one extra `SELECT ... FOR EACH dropped object` per
-// unrelated `DROP` statement in the whole cluster is the accepted, inherent
+// unrelated `DROP` statement in the whole cluster, plus one `DELETE` probing
+// the pgvector-engine rows when an index went, is the accepted, inherent
 // cost of this mechanism.
 extension_sql!(
     r#"
@@ -644,6 +646,17 @@ extension_sql!(
             -- never have one), a no-op DELETE for anything not tracked here.
             DELETE FROM pinecone._am_engine WHERE index_relid = obj.objid;
         END LOOP;
+        -- create_index(engine => 'pgvector')'s own row has no `am_index_relid`: it goes with the table's
+        -- last hnsw index. A row promote() or track() made stays, and so does one naming a Pinecone index
+        -- (a demote keeps it); a track() on top of create_index does not take the row over.
+        IF EXISTS (SELECT 1 FROM pg_event_trigger_dropped_objects() WHERE object_type = 'index') THEN
+            DELETE FROM pinecone.tables t
+             WHERE t.engine = 'pgvector' AND t.synced_by = 'engine' AND t.mode = 'local' AND t.index_name IS NULL
+               AND NOT EXISTS (SELECT 1 FROM pg_index i
+                                 JOIN pg_class c ON c.oid = i.indexrelid
+                                 JOIN pg_am a ON a.oid = c.relam
+                                WHERE i.indrelid = t.relid::oid AND a.amname = 'hnsw');
+        END IF;
     END;
     $$;
     REVOKE EXECUTE ON FUNCTION pinecone._on_sql_drop() FROM PUBLIC;
