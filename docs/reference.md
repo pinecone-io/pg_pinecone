@@ -35,7 +35,7 @@ every GUC, every function's mode/engine support, the error-message table, and kn
 | `pinecone.max_candidates` | `0` (not sent) | Dedicated Read Node query-time tuning: candidates reranked with exact distance, `>= 1`. Same reach/behavior as `pinecone.scan_factor`. |
 
 `pinecone.worker_enabled`/`worker_naptime_ms`/`databases` only take effect with
-`shared_preload_libraries = 'pg_pinecone'` — see the [README's install section](../README.md#installing).
+`shared_preload_libraries = 'pg_pinecone'` — see the [README's quickstart](../README.md#quickstart).
 
 ### Native engine: RaBitQ codes
 
@@ -1230,7 +1230,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 - **The session-GUC key is readable.** `SHOW pinecone.api_key` reveals it to the session that set
   it — prefer `pinecone.set_api_key` for anything long-lived.
 - **`sync_mode = 'async'` tables (and every remote-mode AM-indexed table) are eventually
-  consistent, with no read-your-writes** — see the [README's consistency contract](../README.md#the-consistency-contract).
+  consistent, with no read-your-writes** — see [Consistency with the remote engine](https://docs.pinecone.io/guides/pg-pinecone/storage-engines#consistency-with-the-remote-engine).
 - **Document search is eventually consistent, with no read-your-writes.** A committed change is
   delivered within about a worker interval and searchable up to about a minute later — see
   [Freshness](#document-sync-track_docs). There is no automatic fallback to the local engine in 0.8:
@@ -1246,7 +1246,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
   one grows `topK` (capped by `pinecone.am_max_topk`) or ends the scan early — see
   [Iterative scan](#iterative-scan). A **native-engine** index pushes the same one equality column,
   compared per record inside the list scan (no bitmap); see the
-  [README's filtered-search section](../README.md#filtered-search-natives-case).
+  [filtered-search benchmarks](https://docs.pinecone.io/guides/pg-pinecone/benchmarks#filtered-search).
 - **Remote filter keys: limits.** Pinecone compares numbers as f64, so a key of 2^53 or more is
   rechecked against the heap. A text key counts against Pinecone's 40 KB of metadata per vector;
   a larger value fails its upsert and parks the queue. Renaming the key column needs a `REINDEX`;

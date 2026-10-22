@@ -750,6 +750,6 @@ There is no upgrade path: 0.10.0 renamed the extension (`pinegres` became `pg_pi
 
 ## See also
 
-- [README: the consistency contract](../README.md#the-consistency-contract) — what `async` buys
+- [Consistency with the remote engine](https://docs.pinecone.io/guides/pg-pinecone/storage-engines#consistency-with-the-remote-engine) — what `async` buys
   and costs.
 - [`reference.md`](reference.md) — every GUC, function support matrix, and error message.
