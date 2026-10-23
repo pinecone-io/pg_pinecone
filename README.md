@@ -21,7 +21,7 @@ table.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/pg-pinecone-overview-dark.svg">
-  <img alt="An application sends a standard pgvector query to Postgres, which keeps the rows and vectors. pg_pinecone runs the search with the native (default), pgvector, or remote engine. The remote engine syncs writes to a Pinecone serverless index and returns results as rows." src="docs/images/pg-pinecone-overview-light.svg" width="720">
+  <img alt="An application sends pgvector SQL to Postgres, which keeps the rows and their vector column. pg_pinecone searches them with the native engine (the default), the pgvector engine, or the remote engine, which syncs to a Pinecone serverless index and returns the results." src="docs/images/pg-pinecone-overview-light.svg" width="720">
 </picture>
 
 ## Engines

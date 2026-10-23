@@ -1,57 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="920" viewBox="0 0 720 920" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="620" viewBox="0 0 720 620" role="img" aria-labelledby="t d">
 <title id="t">How pg_pinecone works</title>
-<desc id="d">An application sends a standard pgvector query to Postgres, which keeps the rows and vectors. pg_pinecone runs the search with one of three engines. The native engine, the default, runs the search engine Pinecone uses at scale inside Postgres. The pgvector engine keeps pgvector&#8217;s own HNSW or IVFFlat index. The remote engine, for tables that outgrow one Postgres server, syncs writes to a Pinecone serverless index and returns results as rows. pinecone.set_engine() switches engines, and the same SQL works with every engine.</desc>
-<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#555555"/></marker></defs>
-<rect x="260" y="24" width="200" height="56" rx="8" fill="#ffffff" stroke="#d4d2cb"/>
-<text x="360" y="58" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f1f1f">Application</text>
-<line x1="360" y1="82" x2="360" y2="146" stroke="#555555" stroke-width="2" marker-end="url(#ah)"/>
-<text x="374" y="108" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#5c5b57">Standard pgvector query</text>
-<text x="374" y="128" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#1f1f1f">ORDER BY embedding &lt;=&gt; $1 LIMIT 10</text>
-<rect x="24" y="150" width="672" height="590" rx="12" fill="#ffffff" stroke="#3a3a3a" stroke-width="2"/>
-<text x="48" y="186" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="19" font-weight="700" fill="#1f1f1f">Postgres</text>
-<rect x="48" y="204" width="624" height="84" rx="8" fill="#efeee9" stroke="#d4d2cb"/>
-<text x="68" y="232" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#1f1f1f">Tables</text>
-<text x="68" y="256" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f1f1f">Your rows, including the vectors in a pgvector <tspan font-family="SFMono-Regular, Menlo, Consolas, monospace">vector</tspan> column.</text>
-<text x="68" y="276" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f1f1f">Postgres stays the system of record.</text>
-<rect x="48" y="304" width="624" height="412" rx="8" fill="#efeee9" stroke="#d4d2cb"/>
-<text x="68" y="334" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#1f1f1f">pg_pinecone</text>
-<text x="68" y="358" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f1f1f">The same SQL works with every engine.</text>
-<rect x="68" y="378" width="192" height="290" rx="8" fill="#dfe9fb" stroke="#2f5fd0" stroke-width="2"/>
-<text x="84" y="408" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#1d3f99">native</text>
-<rect x="160" y="393" width="64" height="20" rx="10" fill="#2f5fd0"/>
-<text x="192" y="407" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#ffffff">default</text>
-<text x="84" y="438" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">The search engine</text>
-<text x="84" y="457" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">Pinecone uses at scale,</text>
-<text x="84" y="476" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">running inside Postgres.</text>
-<text x="84" y="514" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">• A fraction of HNSW's</text>
-<text x="84" y="533" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">  index size</text>
-<text x="84" y="552" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">• Built for per-tenant</text>
-<text x="84" y="571" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">  filters</text>
-<text x="84" y="590" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">• Fast inserts and</text>
-<text x="84" y="609" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">  updates</text>
-<text x="84" y="628" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">• No account, API key,</text>
-<text x="84" y="647" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d3f99" xml:space="preserve">  or network calls</text>
-<rect x="272" y="378" width="192" height="290" rx="8" fill="#ffffff" stroke="#d4d2cb"/>
-<text x="288" y="408" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#1f1f1f">pgvector</text>
-<text x="288" y="438" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">pgvector's own HNSW</text>
-<text x="288" y="457" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">or IVFFlat index.</text>
-<text x="288" y="495" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">Use it to keep an</text>
-<text x="288" y="514" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">index you already</text>
-<text x="288" y="533" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">have.</text>
-<rect x="476" y="378" width="192" height="290" rx="8" fill="#ffffff" stroke="#d4d2cb"/>
-<text x="492" y="408" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="#1f1f1f">remote</text>
-<text x="492" y="438" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">Searches run on a</text>
-<text x="492" y="457" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">Pinecone serverless</text>
-<text x="492" y="476" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">index.</text>
-<text x="492" y="514" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">Use it when a table</text>
-<text x="492" y="533" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">outgrows one Postgres</text>
-<text x="492" y="552" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13.5" fill="#1f1f1f">server.</text>
-<text x="68" y="696" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f1f1f">Switch engines with <tspan font-family="SFMono-Regular, Menlo, Consolas, monospace">pinecone.set_engine()</tspan>.</text>
-<line x1="550.0" y1="670" x2="550.0" y2="818" stroke="#555555" stroke-width="1.6" marker-end="url(#ah)"/>
-<line x1="594.0" y1="818" x2="594.0" y2="672" stroke="#555555" stroke-width="1.6" marker-end="url(#ah)"/>
-<text x="540.0" y="782" text-anchor="end" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#5c5b57">↓ writes sync to Pinecone</text>
-<text x="540.0" y="802" text-anchor="end" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#5c5b57">↑ results return as rows</text>
-<rect x="462.0" y="822" width="220" height="72" rx="8" fill="#ffffff" stroke="#d4d2cb"/>
-<text x="572.0" y="852" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1f1f1f">Pinecone</text>
-<text x="572.0" y="876" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1f1f1f">serverless index</text>
+<desc id="d">An application sends pgvector SQL to Postgres, which keeps the rows and their vector column. pg_pinecone runs the search with one of three engines. The native engine, the default, uses IVF and RaBitQ, with a smaller index than HNSW and faster search at equal recall. The pgvector engine uses HNSW or IVFFlat. The remote engine runs on Pinecone: writes sync to a Pinecone serverless index, and results come back to Postgres.</desc>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#a3a3a3" stroke-width="1.4"/></marker></defs>
+<rect x="270" y="20" width="180" height="52" fill="#ffffff" stroke="#e7e5e4"/>
+<text x="360" y="52" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1c1917">Application</text>
+<line x1="360" y1="73" x2="360" y2="122" stroke="#a3a3a3" stroke-width="1" marker-end="url(#ah)"/>
+<text x="374" y="103" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#57534e">pgvector SQL</text>
+<rect x="24" y="126" width="672" height="354" rx="20" fill="#ffffff" stroke="#e7e5e4" stroke-width="1"/>
+<text x="48" y="166" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#1c1917">Postgres</text>
+<rect x="48" y="186" width="624" height="70" rx="4" fill="none" stroke="#e7e5e4" stroke-dasharray="4 3"/>
+<text x="68" y="214" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#1c1917">Tables</text>
+<text x="68" y="240" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">Rows, with a vector column</text>
+<rect x="48" y="272" width="624" height="184" rx="4" fill="none" stroke="#e7e5e4" stroke-dasharray="4 3"/>
+<text x="68" y="302" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#1c1917">pg_pinecone</text>
+<rect x="68" y="320" width="216" height="116" fill="rgba(0,43,255,0.10)" stroke="#002bff" stroke-width="1.5"/>
+<text x="84" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#1c1917">native</text>
+<rect x="164" y="333" width="72" height="23" fill="#002bff"/>
+<text x="200" y="349" text-anchor="middle" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700" fill="#ffffff">DEFAULT</text>
+<text x="84" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">IVF + RaBitQ</text>
+<text x="84" y="398" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">Smaller index than HNSW</text>
+<text x="84" y="418" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">Faster at equal recall</text>
+<rect x="296" y="320" width="172" height="116" fill="#ffffff" stroke="#e7e5e4"/>
+<text x="312" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#1c1917">pgvector</text>
+<text x="312" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">HNSW or IVFFlat</text>
+<rect x="480" y="320" width="172" height="116" fill="#ffffff" stroke="#e7e5e4"/>
+<text x="496" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#1c1917">remote</text>
+<text x="496" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">Runs on Pinecone</text>
+<line x1="544.0" y1="437" x2="544.0" y2="516" stroke="#a3a3a3" stroke-width="1" marker-end="url(#ah)"/>
+<line x1="588.0" y1="516" x2="588.0" y2="439" stroke="#a3a3a3" stroke-width="1" marker-end="url(#ah)"/>
+<text x="534.0" y="496" text-anchor="end" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#57534e">sync</text>
+<text x="598.0" y="496" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#57534e">results</text>
+<rect x="466.0" y="520" width="200" height="72" fill="#ffffff" stroke="#e7e5e4"/>
+<text x="566.0" y="550" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#1c1917">Pinecone</text>
+<text x="566.0" y="574" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#1c1917">Serverless index</text>
 </svg>
