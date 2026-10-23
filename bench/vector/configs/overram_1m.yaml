@@ -1,0 +1,68 @@
+# Search under a memory cap: FP32 hnsw, the FP16 expression index and native, unfiltered k = 10, on the external Postgres 17 of
+# box/overram-pg.sh (shared_buffers 1GB, no swap). Each index is built uncapped; hooks.before_measure lowers the unit's MemoryMax to
+# $OVERRAM_CAP before the sweep (page cache included), after_measure lifts it. phase.sh overram_1m runs it with OVERRAM_CAP=infinity
+# (the baseline) and 4G. The first sweep point runs twice: the first pass refills the cache the cap emptied, the second is the one to
+# read. Column storage is pgvector's default (EXTERNAL): native's rescore reads the 4.1 GB TOAST table under the cap.
+name: overram_1m
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+
+external_pg: {host: localhost, port: 55433, user: ubuntu, admin_dbname: postgres}
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+hooks:
+  before_measure: box/overram-pg.sh cap "${OVERRAM_CAP:-4G}"
+  after_measure: box/overram-pg.sh uncap
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 40, 80, 160, 320]
+
+  - name: pgvector_fp16_expression
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 40, 80, 160, 320]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    scan_fraction_values: [0.0, 0.0, 0.0116, 0.0246, 0.0366]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

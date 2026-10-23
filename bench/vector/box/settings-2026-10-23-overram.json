@@ -1,0 +1,837 @@
+{
+ "label": "2026-10-23-overram",
+ "captured_at": "2026-10-23 00:27:34 UTC",
+ "host": {
+  "kernel": "7.0.0-1014-aws",
+  "os": "Ubuntu 24.04.5 LTS",
+  "cpu": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+  "vcpus": 16,
+  "mem_kib": "129799548",
+  "instance_type": "r6id.4xlarge",
+  "az": "us-east-1a",
+  "ami_id": "ami-0fa5967347d08d2df",
+  "ami_name": null
+ },
+ "postgres": {
+  "server": "postgres (PostgreSQL) 17.11 (Ubuntu 17.11-1.pgdg24.04+2)",
+  "packages": "postgresql-17=17.11-1.pgdg24.04+2\npostgresql-17-pgvector=0.8.7-1.pgdg24.04+1\npostgresql-client-17=17.11-1.pgdg24.04+2\npostgresql-common=293.pgdg24.04+1"
+ },
+ "pg_pinecone": {
+  "tarball_sha256": {
+   "pg_pinecone-0.10.0-pg17-linux-x86_64.tar.gz": "52167cc7a2883fc14d480ce2f4a2564b87780f63efebf7b3d2c72f72bc8a5ec2"
+  },
+  "so_sha256_installed": "08352bfc486d241669415c559ba2831a251f433d970cc8595dc2e3701fc86f4f"
+ },
+ "python": {
+  "version": "3.12.3",
+  "pip_freeze": [
+   "numpy==2.5.4",
+   "pgvector==0.5.1",
+   "psycopg==3.3.6",
+   "psycopg-binary==3.3.6",
+   "PyYAML==6.0.3",
+   "typing_extensions==4.16.0"
+  ]
+ },
+ "postgres18": null,
+ "dataset_sha256": {
+  "wikidpr_shards/wiki_passages_0": "c277bc2ba1ef027ee86cb24b1df7015aaa32972da88d5183f6e5a9563d8705b5",
+  "wikidpr_shards/wiki_passages_1": "9bcfb323ccb0c0f8ed5de949287129c630bfee52738cd2ae232a52eaa6cf6faf",
+  "wikidpr_shards/wiki_passages_2": "c66c771b0363ceb78e19f7fdc7348159c9b4d548837b3856da5d867811f42191",
+  "wikidpr_shards/wiki_passages_3": "3659fccf01a2640fcc5da35161b7afb89ea669f295b7570d78678afd32c8b9b4",
+  "wikidpr_768d_1m.npz": "fcb07ccfd32a88cb619b4f6ad1371a5e44d6d11e3e20da9c4e46d781bc88c146"
+ },
+ "harness_sha": "4c8f16ba9f998835b4896234a19c9dee2cb11175",
+ "tuned_conf": "# Tuned config for the AWS r6id.4xlarge box (16 vCPU, 128 GB, NVMe instance store, Ubuntu 24.04, PGDG Postgres 17):\n# the Linux sibling of pg/tuned.conf, selected with BENCH_TUNED_CONF. Memory, planner and jit settings follow\n# box/postgresql.bench.conf (the same box recipe); the rest keeps this harness's throwaway-instance\n# choices (durability traded for speed, autovacuum off, deterministic plans).\n# Several clusters can run at once (a remote config's `postgres:` block lowers shared_buffers).\n\nshared_buffers = 32GB\neffective_cache_size = 96GB\nmaintenance_work_mem = 8GB\nwork_mem = 256MB\nmax_worker_processes = 24\nmax_parallel_workers = 16\nmax_parallel_maintenance_workers = 8\n\nfsync = off\nsynchronous_commit = off\nfull_page_writes = off\nwal_level = minimal\nmax_wal_senders = 0\nwal_buffers = 64MB\nmin_wal_size = 4GB\nmax_wal_size = 64GB\ncheckpoint_timeout = 30min\ncheckpoint_completion_target = 0.9\n\nmax_connections = 200\n\nrandom_page_cost = 1.1\neffective_io_concurrency = 200\njit = off\ntrack_io_timing = on\n\nlogging_collector = off\nlog_min_messages = warning\nlog_line_prefix = '%m [%p] %q%a '\n\nautovacuum = off\n",
+ "pinecone_api_version": {
+  "vector data plane (pg_pinecone-client)": "2026-04",
+  "control plane (REST helper)": "2026-07"
+ },
+ "runs": {
+  "overram_1m_cap_4G_20261023T002656Z.json": {
+   "run_name": "overram_1m_cap_4G",
+   "started": "2026-10-23T00:21:41.474370+00:00",
+   "wall_seconds": 315.265135,
+   "stamps": {
+    "git_sha": "4c8f16ba9f998835b4896234a19c9dee2cb11175",
+    "git_dirty": false,
+    "bench_content_hash": "542429ce6a068d64",
+    "bench_content_hash_at_start": "542429ce6a068d64",
+    "code_changed_mid_run": false,
+    "config_hash": "3b2ffa9dd076480a",
+    "pgvector_extversion": "0.8.7",
+    "pg_server_version": "17.11 (Ubuntu 17.11-1.pgdg24.04+2)",
+    "pg_debug_assertions": "off"
+   },
+   "postgres_overrides": {
+    "maintenance_work_mem": "8GB",
+    "min_wal_size": "1GB",
+    "max_wal_size": "4GB"
+   },
+   "pg_settings": {
+    "non_default": [
+     [
+      "DateStyle",
+      "ISO, MDY",
+      "",
+      "configuration file"
+     ],
+     [
+      "TimeZone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "autovacuum",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_completion_target",
+      "0.9",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_timeout",
+      "1800",
+      "s",
+      "configuration file"
+     ],
+     [
+      "default_text_search_config",
+      "pg_catalog.english",
+      "",
+      "configuration file"
+     ],
+     [
+      "dynamic_shared_memory_type",
+      "posix",
+      "",
+      "configuration file"
+     ],
+     [
+      "effective_cache_size",
+      "393216",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "effective_io_concurrency",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "fsync",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "full_page_writes",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "jit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_messages",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_monetary",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_numeric",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_time",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "listen_addresses",
+      "localhost",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_line_prefix",
+      "%m [%p] %q%a ",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_min_messages",
+      "warning",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_timezone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "logging_collector",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "maintenance_work_mem",
+      "8388608",
+      "kB",
+      "configuration file"
+     ],
+     [
+      "max_connections",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_maintenance_workers",
+      "8",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_workers",
+      "16",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_senders",
+      "0",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_size",
+      "4096",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "max_worker_processes",
+      "24",
+      "",
+      "configuration file"
+     ],
+     [
+      "min_wal_size",
+      "1024",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "port",
+      "55433",
+      "",
+      "configuration file"
+     ],
+     [
+      "random_page_cost",
+      "1.1",
+      "",
+      "configuration file"
+     ],
+     [
+      "shared_buffers",
+      "131072",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "synchronous_commit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "track_io_timing",
+      "on",
+      "",
+      "configuration file"
+     ],
+     [
+      "unix_socket_directories",
+      "/tmp",
+      "",
+      "configuration file"
+     ],
+     [
+      "wal_buffers",
+      "8192",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "wal_level",
+      "minimal",
+      "",
+      "configuration file"
+     ],
+     [
+      "work_mem",
+      "262144",
+      "kB",
+      "configuration file"
+     ]
+    ],
+    "version": "PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+    "vector_extversion": "0.8.7",
+    "pg_pinecone_extversion": "0.10.0"
+   },
+   "machine": {
+    "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+    "memory_gb": 123.8,
+    "cpu_count": 16
+   }
+  },
+  "overram_1m_cap_infinity_20261023T002139Z.json": {
+   "run_name": "overram_1m_cap_infinity",
+   "started": "2026-10-23T00:16:57.979297+00:00",
+   "wall_seconds": 281.364714,
+   "stamps": {
+    "git_sha": "4c8f16ba9f998835b4896234a19c9dee2cb11175",
+    "git_dirty": false,
+    "bench_content_hash": "542429ce6a068d64",
+    "bench_content_hash_at_start": "542429ce6a068d64",
+    "code_changed_mid_run": false,
+    "config_hash": "63cabcfb85ce83bb",
+    "pgvector_extversion": "0.8.7",
+    "pg_server_version": "17.11 (Ubuntu 17.11-1.pgdg24.04+2)",
+    "pg_debug_assertions": "off"
+   },
+   "postgres_overrides": {
+    "maintenance_work_mem": "8GB",
+    "min_wal_size": "1GB",
+    "max_wal_size": "4GB"
+   },
+   "pg_settings": {
+    "non_default": [
+     [
+      "DateStyle",
+      "ISO, MDY",
+      "",
+      "configuration file"
+     ],
+     [
+      "TimeZone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "autovacuum",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_completion_target",
+      "0.9",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_timeout",
+      "1800",
+      "s",
+      "configuration file"
+     ],
+     [
+      "default_text_search_config",
+      "pg_catalog.english",
+      "",
+      "configuration file"
+     ],
+     [
+      "dynamic_shared_memory_type",
+      "posix",
+      "",
+      "configuration file"
+     ],
+     [
+      "effective_cache_size",
+      "393216",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "effective_io_concurrency",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "fsync",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "full_page_writes",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "jit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_messages",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_monetary",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_numeric",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_time",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "listen_addresses",
+      "localhost",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_line_prefix",
+      "%m [%p] %q%a ",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_min_messages",
+      "warning",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_timezone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "logging_collector",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "maintenance_work_mem",
+      "8388608",
+      "kB",
+      "configuration file"
+     ],
+     [
+      "max_connections",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_maintenance_workers",
+      "8",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_workers",
+      "16",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_senders",
+      "0",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_size",
+      "4096",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "max_worker_processes",
+      "24",
+      "",
+      "configuration file"
+     ],
+     [
+      "min_wal_size",
+      "1024",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "port",
+      "55433",
+      "",
+      "configuration file"
+     ],
+     [
+      "random_page_cost",
+      "1.1",
+      "",
+      "configuration file"
+     ],
+     [
+      "shared_buffers",
+      "131072",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "synchronous_commit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "track_io_timing",
+      "on",
+      "",
+      "configuration file"
+     ],
+     [
+      "unix_socket_directories",
+      "/tmp",
+      "",
+      "configuration file"
+     ],
+     [
+      "wal_buffers",
+      "8192",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "wal_level",
+      "minimal",
+      "",
+      "configuration file"
+     ],
+     [
+      "work_mem",
+      "262144",
+      "kB",
+      "configuration file"
+     ]
+    ],
+    "version": "PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+    "vector_extversion": "0.8.7",
+    "pg_pinecone_extversion": "0.10.0"
+   },
+   "machine": {
+    "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+    "memory_gb": 123.8,
+    "cpu_count": 16
+   }
+  },
+  "smoke_overram_20261023T001656Z.json": {
+   "run_name": "smoke_overram",
+   "started": "2026-10-23T00:15:35.421901+00:00",
+   "wall_seconds": 80.771398,
+   "stamps": {
+    "git_sha": "4c8f16ba9f998835b4896234a19c9dee2cb11175",
+    "git_dirty": false,
+    "bench_content_hash": "542429ce6a068d64",
+    "bench_content_hash_at_start": "542429ce6a068d64",
+    "code_changed_mid_run": false,
+    "config_hash": "d78fb970507364e7",
+    "pgvector_extversion": "0.8.7",
+    "pg_server_version": "17.11 (Ubuntu 17.11-1.pgdg24.04+2)",
+    "pg_debug_assertions": "off"
+   },
+   "postgres_overrides": {},
+   "pg_settings": {
+    "non_default": [
+     [
+      "DateStyle",
+      "ISO, MDY",
+      "",
+      "configuration file"
+     ],
+     [
+      "TimeZone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "autovacuum",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_completion_target",
+      "0.9",
+      "",
+      "configuration file"
+     ],
+     [
+      "checkpoint_timeout",
+      "1800",
+      "s",
+      "configuration file"
+     ],
+     [
+      "default_text_search_config",
+      "pg_catalog.english",
+      "",
+      "configuration file"
+     ],
+     [
+      "dynamic_shared_memory_type",
+      "posix",
+      "",
+      "configuration file"
+     ],
+     [
+      "effective_cache_size",
+      "393216",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "effective_io_concurrency",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "fsync",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "full_page_writes",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "jit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_messages",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_monetary",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_numeric",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "lc_time",
+      "C.UTF-8",
+      "",
+      "configuration file"
+     ],
+     [
+      "listen_addresses",
+      "localhost",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_line_prefix",
+      "%m [%p] %q%a ",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_min_messages",
+      "warning",
+      "",
+      "configuration file"
+     ],
+     [
+      "log_timezone",
+      "Etc/UTC",
+      "",
+      "configuration file"
+     ],
+     [
+      "logging_collector",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "maintenance_work_mem",
+      "8388608",
+      "kB",
+      "configuration file"
+     ],
+     [
+      "max_connections",
+      "200",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_maintenance_workers",
+      "8",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_parallel_workers",
+      "16",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_senders",
+      "0",
+      "",
+      "configuration file"
+     ],
+     [
+      "max_wal_size",
+      "65536",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "max_worker_processes",
+      "24",
+      "",
+      "configuration file"
+     ],
+     [
+      "min_wal_size",
+      "4096",
+      "MB",
+      "configuration file"
+     ],
+     [
+      "port",
+      "55433",
+      "",
+      "configuration file"
+     ],
+     [
+      "random_page_cost",
+      "1.1",
+      "",
+      "configuration file"
+     ],
+     [
+      "shared_buffers",
+      "8192",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "synchronous_commit",
+      "off",
+      "",
+      "configuration file"
+     ],
+     [
+      "track_io_timing",
+      "on",
+      "",
+      "configuration file"
+     ],
+     [
+      "unix_socket_directories",
+      "/tmp",
+      "",
+      "configuration file"
+     ],
+     [
+      "wal_buffers",
+      "8192",
+      "8kB",
+      "configuration file"
+     ],
+     [
+      "wal_level",
+      "minimal",
+      "",
+      "configuration file"
+     ],
+     [
+      "work_mem",
+      "262144",
+      "kB",
+      "configuration file"
+     ]
+    ],
+    "version": "PostgreSQL 17.11 (Ubuntu 17.11-1.pgdg24.04+2) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+    "vector_extversion": "0.8.7",
+    "pg_pinecone_extversion": "0.10.0"
+   },
+   "machine": {
+    "platform": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz",
+    "memory_gb": 123.8,
+    "cpu_count": 16
+   }
+  }
+ }
+}

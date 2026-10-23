@@ -1,0 +1,59 @@
+# Rehearsal of configs/overram_1m.yaml at 50,000 x 768d (synthetic): the external Postgres of box/overram-pg.sh, the cap and uncap
+# hooks around each sweep, a 256M cap. Not a result worth reporting. On the box: phase.sh overram_smoke.
+name: smoke_overram
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 0.5
+
+external_pg: {host: localhost, port: 55433, user: ubuntu, admin_dbname: postgres}
+
+hooks:
+  before_measure: box/overram-pg.sh cap "${OVERRAM_CAP:-256M}"
+  after_measure: box/overram-pg.sh uncap
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+
+filters:
+  run: []
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 40, 160]
+
+  - name: pgvector_fp16_expression
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 40, 160]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

@@ -88,7 +88,11 @@ source bench/vector/box/conn.sh && bscp pg_pinecone-0.10.0-pg18-linux-x86_64.tar
 
 On the box: `$B/vector/box/install-pg_pinecone.sh`, `$B/vector/box/setup-box.sh`, then `$S hvf $P data pg18_install hvf_prep hvf_smoke hvf_1m` (about 40 min), `BOX_LABEL=<date>-hvfilt $P settings`; copy `/var/bench/{raw,logs,state}` off and check them before `teardown.sh`.
 
+## Over-RAM session
 
+`configs/overram_1m.yaml` against the PostgreSQL 17 unit of `overram-pg.sh` (cgroup v2, no swap), uncapped and at 4G, with the 0.10.0 pg17 tarball, no Pinecone. The harness's `hooks` lower the unit's `MemoryMax` after each index build and lift it after the sweep. Facts: `BOX-2026-10-22-overram.md`; results: `../REPORT-overram.md`.
+
+As the filtered halfvec session, with the pg17 tarball only, then on the box: `$S setup bash -c "$B/vector/box/install-pg_pinecone.sh && $B/vector/box/setup-box.sh"` (detached: `setup-box.sh` leaves `sar` running), `$S ovr $P data overram_prep overram_smoke overram_1m` (about 25 min), `BOX_LABEL=<date>-overram $P settings`; copy off and check before `teardown.sh`.
 
 ## Teardown
 

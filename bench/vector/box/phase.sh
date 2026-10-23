@@ -5,6 +5,7 @@
 #         pg18_install   (PostgreSQL 18 and the pg18 tarball next to the 17 of user-data.sh)
 #         hv_install hv_prep hv_smoke hv_1m   (the halfvec session: pg_pinecone built from main, no Pinecone, no key file)
 #         hvf_prep hvf_smoke hvf_1m   (filtered halfvec: PostgreSQL 18 and the 0.10.0 pg18 tarball after pg18_install, no Pinecone)
+#         overram_prep overram_smoke overram_1m   (search under a memory cap: box/overram-pg.sh, PostgreSQL 17, no Pinecone)
 #         settings   (settings-<label>.json of the run; BOX_LABEL required)
 # local_1m, c1, c2 and ext run the configs/*-0.10.yaml variants; remote_filtered keeps its index (remote_filtered_keep.yaml).
 # No key sits in any environment: remote legs read it from the file $EE_ENV. Finished phases leave $STATE/done-<phase>.
@@ -71,6 +72,15 @@ phase() {
         hvf_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/halfvec_filtered_1m_0.10.yaml --prep-only -v ;;
         hvf_smoke) run18 hvfsmoke smoke-halfvec-filtered ;;
         hvf_1m) run18 hvf1m halfvec_filtered_1m_0.10 ;;
+        overram_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/overram_1m.yaml --prep-only -v ;;
+        overram_smoke) OVERRAM_SHARED_BUFFERS=64MB "$V/box/overram-pg.sh" start && env -u PINECONE_API_KEY "$PY" run.py --config configs/smoke-overram.yaml -v ;;
+        overram_1m)
+            for cap in infinity 4G; do
+                "$V/box/overram-pg.sh" start
+                OVERRAM_CAP=$cap env -u PINECONE_API_KEY "$PY" run.py --config configs/overram_1m.yaml --set "name=overram_1m_cap_$cap" -v
+            done
+            "$V/box/overram-pg.sh" stop
+            ;;
         settings) "$PY" "$V/box/settings.py" "${BOX_LABEL:?set BOX_LABEL}" ;;
         *) echo "unknown phase $1" >&2; return 2 ;;
     esac

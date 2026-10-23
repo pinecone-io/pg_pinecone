@@ -315,6 +315,18 @@ def _check_halfvec_ef_search(system, k_list, k: int, filtered: bool) -> None:
                 "pgvector can return fewer candidates, making recall artificially low")
 
 
+def _run_hook(cmd: str | None, system_name: str) -> dict | None:
+    if not cmd:
+        return None
+    with timed() as t:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                           env=dict(os.environ, SYSTEM=system_name))
+    if p.returncode:
+        raise RuntimeError(f"hook {cmd!r} failed ({p.returncode}): {p.stderr.strip()}")
+    log.info("  hook %r: %.1fs", cmd, t["seconds"])
+    return dict(cmd=cmd, seconds=t["seconds"], output=p.stdout.strip())
+
+
 def _pg_settings(conn) -> dict:
     rows = conn.execute("SELECT name, setting, coalesce(unit, ''), source FROM pg_settings "
                         "WHERE source NOT IN ('default', 'override') ORDER BY name").fetchall()
@@ -619,6 +631,8 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
             # and recall is asserted ==1.0 rather than hardness-gated (an exact
             # scan visiting every qualifying row is supposed to be "too easy" --
             # that's not a calibration bug here, it's the point).
+            hooks = cfg.get("hooks") or {}
+            hook_runs = dict(before_build=_run_hook(hooks.get("before_build"), system.name))
             force_seqscan = system.kind == "exact"
             is_remote = system.kind in remote_mod.REMOTE_KINDS
             # build_index drops every OTHER index on the table first:
@@ -643,6 +657,9 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
                                                      filtered={})
                 checkpoint(f"{system.name}/build")
                 continue
+            hook_runs["before_measure"] = _run_hook(hooks.get("before_measure"), system.name)
+            if hooks:
+                build["hooks"] = hook_runs
             expected_index = system.index_name(table)
             n_conns_sys = tuple(system.concurrency or n_conns_list)
             k_list = system.k_values or cfg.get("k_values") or [k]
@@ -860,6 +877,8 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
                         remote_mod.clear_key(conn)
                 system_results[system.name]["remote_extras"] = extras
                 checkpoint(f"{system.name}/teardown")
+
+            hook_runs["after_measure"] = _run_hook(hooks.get("after_measure"), system.name)
 
         with pg.connect() as conn:
             pg_settings = _pg_settings(conn)

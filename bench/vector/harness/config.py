@@ -39,4 +39,7 @@ def load_config(path: str | Path) -> dict:
     # harness/pgctl.py:PgInstance's `external` param. None (default) is the
     # harness's normal local-instance behavior, unchanged.
     cfg.setdefault("external_pg", None)
+    # Per-system shell commands `before_build`, `before_measure`, `after_measure`:
+    # e.g. a cgroup memory cap on an external Postgres that must spare the build.
+    cfg.setdefault("hooks", {})
     return cfg
