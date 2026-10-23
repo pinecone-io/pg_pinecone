@@ -1,0 +1,85 @@
+# Rehearsal of configs/halfvec_filtered_1m_0.10.yaml: the same systems and filter cells on a 50,000 x 768d synthetic corpus with
+# trimmed sweeps. Proves the halfvec expression index under a correlated filter with iterative scan (FP16-rounded filtered truth,
+# the ef_search >= LIMIT check, the plan gate) beside FP32 hnsw and native with a pushed key. Not a result worth reporting.
+# Run (from bench/vector; PG_PINECONE_BENCH_PG = a Postgres with pgvector and pg_pinecone installed):
+#   env -u PINECONE_API_KEY .venv/bin/python run.py --config configs/smoke-halfvec-filtered.yaml \
+#       --data-dir "$PG_PINECONE_BENCH_DATA/vector/pgdata-hvfilt" -v
+name: smoke_halfvec_filtered
+seed: 42
+k: 10
+warmup_queries: 10
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 0.5
+
+dataset:
+  kind: synthetic
+  n: 50000
+  dim: 768
+  n_centers: 1000
+  cluster_sigma: 1.1
+  cluster_scale_mix: [0.6, 1.0, 1.6]
+  background_frac: 0.02
+  n_queries: 100
+
+metric: l2
+
+filters:
+  selectivities: [0.01, 0.10]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 160]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  - name: pgvector_fp16_expression
+    type: hnsw
+    storage_type: vector
+    index_type: halfvec
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40, 160]
+    iterative_scan_values: [null]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  - name: pnat_filt_1pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 2]
+    filtered_iterative_scan_values: ["auto", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+  - name: pnat_filt_10pct
+    type: pg_pinecone_native
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 2]
+    filtered_iterative_scan_values: ["auto", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+
+  - name: exact_seqscan
+    type: exact
+    skip_unfiltered: true
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

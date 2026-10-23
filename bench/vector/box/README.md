@@ -74,6 +74,20 @@ $S hv1m $P hv_1m                   # halfvec_1m.yaml: 2.5 to 3 h, an estimate
 
 `hv_install` builds with `RUSTFLAGS='-C target-cpu=x86-64-v3'`, as the release tarballs are. Nothing else runs beside `hv_1m`. Teardown as below.
 
+## Filtered halfvec session
+
+`configs/halfvec_filtered_1m_0.10.yaml` (the 1% and 10% filtered cells of the 0.10.0 release with pgvector's FP16 expression index added) on PostgreSQL 18 with the 0.10.0 tarballs, no Pinecone, no key file. Facts: `BOX-2026-10-22-hvfilt.md`; results: `../REPORT-halfvec-filtered.md`.
+
+```
+for pg in 17 18; do curl -fsSLO https://github.com/pinecone-io/pg_pinecone/releases/download/v0.10.0/pg_pinecone-0.10.0-pg$pg-linux-x86_64.tar.gz; done
+export BOX_DATE=<date>-hvfilt BOX_JSON=$HOME/.pg_pinecone-bench/box-<date>-hvfilt.json BOX_OWNER=<you> AWS_PROFILE=<profile>
+bench/vector/box/provision.sh
+TARBALL=$PWD/pg_pinecone-0.10.0-pg17-linux-x86_64.tar.gz bench/vector/box/upload.sh
+source bench/vector/box/conn.sh && bscp pg_pinecone-0.10.0-pg18-linux-x86_64.tar.gz ubuntu@$BOX_IP:
+```
+
+On the box: `$B/vector/box/install-pg_pinecone.sh`, `$B/vector/box/setup-box.sh`, then `$S hvf $P data pg18_install hvf_prep hvf_smoke hvf_1m` (about 40 min), `BOX_LABEL=<date>-hvfilt $P settings`; copy `/var/bench/{raw,logs,state}` off and check them before `teardown.sh`.
+
 
 
 ## Teardown
