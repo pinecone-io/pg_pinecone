@@ -46,6 +46,17 @@ impl Metric {
     pub(crate) fn as_u8(self) -> u8 {
         self as u8
     }
+
+    /// The metric rows are clustered into IVF lists by. Inner product isn't a distance (the
+    /// largest-norm centroid wins most rows), so it partitions by L2; probing still ranks by `q·c`.
+    /// A simpler variant of Auvolat et al., "Clustering is Efficient for Approximate MIPS"
+    /// (arXiv:1507.05910, 2015), who cluster after reducing MIPS to cosine search.
+    pub(crate) fn partition(self) -> Self {
+        match self {
+            Metric::Ip => Metric::L2,
+            m => m,
+        }
+    }
 }
 
 pub(crate) fn l2_norm(a: &[f32]) -> f32 {

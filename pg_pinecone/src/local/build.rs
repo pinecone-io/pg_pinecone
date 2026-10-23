@@ -576,7 +576,7 @@ impl Assigned {
 
 /// One worker's share: `rows` assigned to their nearest centroid and encoded against it, with
 /// one [`EncodeScratch`] and one [`Code`] for the whole chunk. A cosine index encodes the unit
-/// vector (`x / |x|`); the assignment itself uses the stored vector, as the scan's ranking does.
+/// vector (`x / |x|`); the assignment itself uses the stored vector, by [`Metric::partition`].
 fn assign_chunk(
     rows: &[CollectedRow],
     km: &KMeans,

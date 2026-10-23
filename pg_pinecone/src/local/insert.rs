@@ -41,9 +41,10 @@
 //! loser re-reads `next` and walks into the winner's fresh page. Two
 //! backends extending DIFFERENT lists' tails serialize on the relation
 //! extension lock inside `ExtendBufferedRel` (never `P_NEW`'s
-//! skip-extension-lock compat path — see the fix comment at the call site), so each is handed a distinct fresh block. Lock
-//! ordering vs the metapage: the counter bump (below) locks block 0 alone
-//! and releases it BEFORE the chain walk begins — no path in this module
+//! skip-extension-lock compat path — see the fix comment at the call site),
+//! so each is handed a distinct fresh block. Lock ordering vs the metapage:
+//! the counter bump (below) locks block 0 alone and releases it BEFORE the
+//! chain walk begins — no path in this module
 //! (or scan/sweep, which lock one page at a time) ever holds two of these
 //! locks at once except the tail+fresh-page pair, whose fresh page is
 //! brand-new and thus unreachable by any other backend until the record
@@ -88,9 +89,9 @@
 //! the crash-overcount window entirely (bump+append become atomic), at the
 //! cost of holding block 0's exclusive lock for the whole chain-append
 //! critical section instead of an instant, plus a multi-buffer lock-order
-//! proof. Deliberately DEFERRED
-//! so mode-aware `amcostestimate` and any churn-benchmark rerun can price
-//! insert overhead against this documented baseline first.
+//! proof. Deliberately DEFERRED so mode-aware `amcostestimate` and any
+//! churn-benchmark rerun can price insert overhead against this documented
+//! baseline first.
 //!
 //! ## Flat (small-N bootstrap) insert, and the flat→IVF transition
 //! A flat index stores NO per-record data — its scan path reads live heap
@@ -161,10 +162,10 @@ pub(crate) unsafe fn aminsert_local(
             return;
         }
 
-        // Everything fallible/derivable runs BEFORE the counter bump:
-        // a validation ERROR after the bump would
-        // leave a permanent +1 behind (GenericXLog writes are
-        // non-transactional — see the module docstring's overcount note),
+        // Everything fallible/derivable runs BEFORE the counter bump: a
+        // validation ERROR after the bump would leave a permanent +1 behind
+        // (GenericXLog writes are non-transactional — see the module
+        // docstring's overcount note),
         // so raise before touching any page. The bump still strictly
         // precedes the APPEND, which is the ordering the staleness bound
         // actually needs.
@@ -199,10 +200,7 @@ pub(crate) unsafe fn aminsert_local(
             (0i64, false)
         };
 
-        // Nearest centroid WITH a non-empty list (the empty-list rule —
-        // module docstring). TODO(perf-0.10 P-IP): for an inner-product index this is the build's
-        // max-inner-product assignment, which lets one list swallow offset data
-        // (`kmeans::nearest_centroid`).
+        // Nearest centroid WITH a non-empty list (the empty-list rule — module docstring).
         let directory = scan::cached_directory(index, meta);
         let mut best: Option<(usize, pg_sys::BlockNumber, f32)> = None;
         for i in 0..directory.n_entries {
@@ -210,7 +208,11 @@ pub(crate) unsafe fn aminsert_local(
             if head == INVALID_BLOCK {
                 continue;
             }
-            let dist = super::metric::exact_distance(meta.metric, &vector, directory.centroid(i));
+            let dist = super::metric::exact_distance(
+                meta.metric.partition(),
+                &vector,
+                directory.centroid(i),
+            );
             // `total_cmp` ordering (same reasoning as
             // `kmeans::nearest_centroid`): a NaN distance (finite inputs can
             // overflow to Inf - Inf) must neither win the assignment (bare

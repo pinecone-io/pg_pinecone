@@ -160,7 +160,7 @@ impl KMeans {
                 sample_idx,
                 vectors,
                 &centroids,
-                metric,
+                metric.partition(),
                 parallelism,
             );
 
@@ -194,16 +194,12 @@ impl KMeans {
         KMeans { centroids }
     }
 
-    /// The index of `vectors`'s nearest centroid, by `metric`.
+    /// The index of `vectors`'s nearest centroid, by `metric`'s [`Metric::partition`].
     pub(crate) fn assign(&self, vector: &[f32], metric: Metric) -> usize {
-        nearest_centroid(vector, &self.centroids, metric)
+        nearest_centroid(vector, &self.centroids, metric.partition())
     }
 }
 
-// TODO(perf-0.10 P-IP): an inner-product index assigns by maximum inner product, so on data with a
-// large common offset the largest-norm centroid swallows most rows (16,384 of 20,000 in one list on the
-// common-offset 256-d test set, all 2,400 of `rq_pages_ip`'s) and recall at a given probe count drops.
-// `local::insert` follows this assignment; a fix has to change both and the list probing together.
 fn nearest_centroid(v: &[f32], centroids: &[Vec<f32>], metric: Metric) -> usize {
     centroids
         .iter()
@@ -469,6 +465,20 @@ mod tests {
             let c = km.assign(v, Metric::L2);
             assert!(c < 4);
         }
+    }
+
+    #[test]
+    fn inner_product_partitions_offset_data_evenly() {
+        let data: Vec<Vec<f32>> = make_clustered_data(4)
+            .into_iter()
+            .map(|v| v.iter().map(|x| x + 1000.0).collect())
+            .collect();
+        let km = KMeans::train(&data, 2, 4, Metric::Ip, 11, 0);
+        let mut counts = [0usize; 4];
+        for v in &data {
+            counts[km.assign(v, Metric::Ip)] += 1;
+        }
+        assert_eq!(counts, [50; 4], "one list per blob");
     }
 
     #[test]

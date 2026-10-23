@@ -47279,15 +47279,8 @@ mod tests {
         rq_load(table, 1, &data.vectors, None);
         let index = rq_index(table, metric, "", "small_n_threshold = 100, seed = 31");
         let pages = rq_assert_pages_hold_reference_codes(&index, table, metric, false, 250, &[]);
-        // k-means assigns an inner-product index by maximum inner product, which on data with a
-        // large common offset (this IP fixture) sends every row to the one centroid with the
-        // largest norm: the codes are then checked against that single list. L2 and cosine spread.
         let non_empty = pages.lists.iter().filter(|l| !l.is_empty()).count();
-        if metric.local == crate::local::metric::Metric::Ip {
-            assert!(non_empty >= 1, "at least one list holds the rows");
-        } else {
-            assert!(non_empty > 10, "clustered into several lists");
-        }
+        assert!(non_empty > 10, "clustered into several lists");
     }
 
     #[pg_test]
@@ -47431,6 +47424,50 @@ mod tests {
             "an inserted row finds itself: {hits}/{}",
             own_ids.len()
         );
+    }
+
+    /// Rows inserted into an inner-product index land in their L2-nearest list (`Metric::partition`),
+    /// not the largest-norm one: an f64 oracle over the stored centroids.
+    #[pg_test]
+    fn rabitq_inserts_into_an_ip_index_take_the_l2_nearest_list() {
+        let (built, total) = (9_000usize, 12_000usize);
+        let case = rq_case("common_offset_256_ip");
+        let data = tk::mixture(&case.spec, total, 1, case.data_seed);
+        rq_table("rq_ip_ins", case.spec.dim, "");
+        rq_load("rq_ip_ins", 1, &data.vectors[..built], None);
+        let index = rq_index(
+            "rq_ip_ins",
+            RQ_IP,
+            "",
+            "seed = 41, small_n_threshold = 1000",
+        );
+        rq_load("rq_ip_ins", built as i64 + 1, &data.vectors[built..], None);
+
+        let pages = rq_decode(&index, false);
+        let tids = rq_tid_ids("rq_ip_ins");
+        let l2 = |x: &[f32], c: &[f32]| -> f64 {
+            x.iter()
+                .zip(c)
+                .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+                .sum()
+        };
+        let mut checked = 0;
+        for (list, records) in pages.lists.iter().enumerate() {
+            for record in records.iter().filter(|r| tids[&r.tid] > built as i64) {
+                let x = &data.vectors[tids[&record.tid] as usize - 1];
+                let best = (pages.lists.iter().zip(&pages.centroids))
+                    .filter(|(l, _)| !l.is_empty())
+                    .map(|(_, c)| l2(x, c))
+                    .fold(f64::INFINITY, f64::min);
+                let got = l2(x, &pages.centroids[list]);
+                assert!(
+                    got <= best * (1.0 + 1e-4),
+                    "list {list} at {got}, the nearest at {best}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, total - built, "every inserted row is checked");
     }
 
     /// A 1 % filter correlated with the data (one cluster's every fifth row)
