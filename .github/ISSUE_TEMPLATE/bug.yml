@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in pg_pinecone is not working as expected
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for a report. Include the version, Postgres, engine, and a way to reproduce.
+
+        To report a security issue, do not use this form. Follow [SECURITY.md](https://github.com/pinecone-io/pg_pinecone/blob/main/SECURITY.md) instead.
+  - type: input
+    id: pg_pinecone_version
+    attributes:
+      label: pg_pinecone version
+      description: "`SELECT extversion FROM pg_extension WHERE extname = 'pg_pinecone';`"
+      placeholder: "0.12.0"
+    validations:
+      required: true
+  - type: textarea
+    id: postgres
+    attributes:
+      label: PostgreSQL version and operating system
+      description: "`SELECT version();` and the OS you run Postgres on."
+      placeholder: |
+        PostgreSQL 17.6 on aarch64-apple-darwin
+        macOS 15.4
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      description: The table's engine. Choose n/a for an install, docs, or full-text issue.
+      options:
+        - native
+        - pgvector
+        - remote
+        - n/a
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest SQL or commands that show the problem.
+      placeholder: |
+        CREATE EXTENSION vector;
+        CREATE EXTENSION pg_pinecone;
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message
+      description: The full error, including SQLSTATE if Postgres printed one.
+      render: shell
+    validations:
+      required: true
