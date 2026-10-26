@@ -1,36 +1,1666 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="620" viewBox="0 0 720 620" role="img" aria-labelledby="t d">
-<title id="t">How pg_pinecone works</title>
-<desc id="d">An application sends pgvector SQL to Postgres, which keeps the rows and their vector column. pg_pinecone runs the search with one of three engines. The native engine, the default, uses IVF and RaBitQ, with a smaller index than HNSW and faster search at equal recall. The pgvector engine uses HNSW or IVFFlat. The remote engine runs on Pinecone: writes sync to a Pinecone serverless index, and results come back to Postgres.</desc>
-<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1,1 L9,5 L1,9" fill="none" stroke="#8a8784" stroke-width="1.4"/></marker></defs>
-<rect x="270" y="20" width="180" height="52" fill="#1c1c1e" stroke="#3f3c3a"/>
-<text x="360" y="52" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#f5f5f4">Application</text>
-<line x1="360" y1="73" x2="360" y2="122" stroke="#8a8784" stroke-width="1" marker-end="url(#ah)"/>
-<text x="374" y="103" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#a8a29e">pgvector SQL</text>
-<rect x="24" y="126" width="672" height="354" rx="20" fill="#1c1c1e" stroke="#3f3c3a" stroke-width="1"/>
-<text x="48" y="166" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#f5f5f4">Postgres</text>
-<rect x="48" y="186" width="624" height="70" rx="4" fill="none" stroke="#3f3c3a" stroke-dasharray="4 3"/>
-<text x="68" y="214" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#f5f5f4">Tables</text>
-<text x="68" y="240" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">Rows, with a vector column</text>
-<rect x="48" y="272" width="624" height="184" rx="4" fill="none" stroke="#3f3c3a" stroke-dasharray="4 3"/>
-<text x="68" y="302" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#f5f5f4">pg_pinecone</text>
-<rect x="68" y="320" width="216" height="116" fill="rgba(77,107,255,0.18)" stroke="#4d6bff" stroke-width="1.5"/>
-<text x="84" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#f5f5f4">native</text>
-<rect x="164" y="333" width="72" height="23" fill="#4d6bff"/>
-<text x="200" y="349" text-anchor="middle" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700" fill="#ffffff">DEFAULT</text>
-<text x="84" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">IVF + RaBitQ</text>
-<text x="84" y="398" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">Smaller index than HNSW</text>
-<text x="84" y="418" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">Faster at equal recall</text>
-<rect x="296" y="320" width="172" height="116" fill="#1c1c1e" stroke="#3f3c3a"/>
-<text x="312" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#f5f5f4">pgvector</text>
-<text x="312" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">HNSW or IVFFlat</text>
-<rect x="480" y="320" width="172" height="116" fill="#1c1c1e" stroke="#3f3c3a"/>
-<text x="496" y="350" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#f5f5f4">remote</text>
-<text x="496" y="378" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">Runs on Pinecone</text>
-<line x1="544.0" y1="437" x2="544.0" y2="516" stroke="#8a8784" stroke-width="1" marker-end="url(#ah)"/>
-<line x1="588.0" y1="516" x2="588.0" y2="439" stroke="#8a8784" stroke-width="1" marker-end="url(#ah)"/>
-<text x="534.0" y="496" text-anchor="end" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#a8a29e">sync</text>
-<text x="598.0" y="496" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#a8a29e">results</text>
-<rect x="466.0" y="520" width="200" height="72" fill="#1c1c1e" stroke="#3f3c3a"/>
-<text x="566.0" y="550" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="600" fill="#f5f5f4">Pinecone</text>
-<text x="566.0" y="574" text-anchor="middle" font-family="GT Planar VCTR, GT Planar, Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#f5f5f4">Serverless index</text>
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="892.7875pt" height="276.9pt" viewBox="0 0 892.7875 276.9" xmlns="http://www.w3.org/2000/svg" version="1.1" role="img" aria-labelledby="t d">
+ <title id="t">How pg_pinecone works</title>
+ <desc id="d">An application sends pgvector SQL to Postgres, which keeps the rows and their vector column. pg_pinecone searches them with the native engine (the default, IVF plus RaBitQ, with a smaller index than HNSW and faster search at equal recall), the pgvector engine (HNSW or IVFFlat), or the remote engine, which runs on Pinecone: writes sync to a Pinecone serverless index and results come back.</desc>
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-25T21:47:21.587243</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 276.9 
+L 892.7875 276.9 
+L 892.7875 0 
+L 0 0 
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 189.675 14 
+L 694.74375 14 
+L 694.74375 262.9 
+L 189.675 262.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #18181b; stroke: #d6d3d1; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 201.675 49.2 
+L 682.74375 49.2 
+L 682.74375 102.8 
+L 201.675 102.8 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #57534e; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 442.209375 120.8 
+L 446.709375 111.8 
+L 442.909375 111.8 
+L 442.909375 102.8 
+L 441.509375 102.8 
+L 441.509375 111.8 
+L 437.709375 111.8 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #a8a29e"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 201.675 120.8 
+L 682.74375 120.8 
+L 682.74375 250.9 
+L 201.675 250.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #d6d3d1; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #4d6bff; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #4d6bff; fill-opacity: 0.18"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 299.41 159.7 
+L 356.77 159.7 
+L 356.77 177.4 
+L 299.41 177.4 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #4d6bff"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #4d6bff; fill-opacity: 0.18; stroke: #4d6bff; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 211.675 151.3 
+L 392.495 151.3 
+L 392.495 240.9 
+L 211.675 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #4d6bff; fill-opacity: 0.18"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 299.41 159.7 
+L 356.77 159.7 
+L 356.77 177.4 
+L 299.41 177.4 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #4d6bff"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 400.495 151.3 
+L 529.745 151.3 
+L 529.745 240.9 
+L 400.495 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #57534e; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_15">
+    <path d="M 400.495 169.3 
+L 529.745 169.3 
+L 529.745 222.9 
+L 400.495 222.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 537.745 151.3 
+L 672.74375 151.3 
+L 672.74375 240.9 
+L 537.745 240.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #57534e; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_17">
+    <path d="M 537.745 169.3 
+L 672.74375 169.3 
+L 672.74375 222.9 
+L 537.745 222.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226"/>
+   </g>
+   <g id="patch_18">
+    <path d="M 14 58.75 
+L 123.675 58.75 
+L 123.675 93.25 
+L 14 93.25 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #57534e; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_19">
+    <path d="M 201.675 76 
+L 192.675 71.5 
+L 192.675 75.3 
+L 123.675 75.3 
+L 123.675 76.7 
+L 192.675 76.7 
+L 192.675 80.5 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #a8a29e"/>
+   </g>
+   <g id="patch_20">
+    <path d="M 752.74375 169.3 
+L 878.7875 169.3 
+L 878.7875 222.9 
+L 752.74375 222.9 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #222226; stroke: #57534e; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_21">
+    <path d="M 752.74375 186.1 
+L 743.74375 181.6 
+L 743.74375 185.4 
+L 672.74375 185.4 
+L 672.74375 186.8 
+L 743.74375 186.8 
+L 743.74375 190.6 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #a8a29e"/>
+   </g>
+   <g id="patch_22">
+    <path d="M 672.74375 206.1 
+L 681.74375 210.6 
+L 681.74375 206.8 
+L 752.74375 206.8 
+L 752.74375 205.4 
+L 681.74375 205.4 
+L 681.74375 201.6 
+z
+" clip-path="url(#p2714cbf321)" style="fill: #a8a29e"/>
+   </g>
+   <g id="text_1">
+    <!-- Postgres -->
+    <g style="fill: #f5f5f4" transform="translate(408.953125 37.2) scale(0.16 -0.16)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-13" d="M 550 0 
+L 1376 0 
+L 1376 1709 
+L 2464 1709 
+C 3411 1709 3994 2234 3994 3098 
+C 3994 3955 3411 4480 2464 4480 
+L 550 4480 
+L 550 0 
+z
+M 1376 2483 
+L 1376 3706 
+L 2432 3706 
+C 2893 3706 3155 3475 3155 3098 
+C 3155 2714 2893 2483 2432 2483 
+L 1376 2483 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-9f" d="M 1901 -96 
+C 2867 -96 3539 570 3539 1568 
+C 3539 2560 2867 3226 1901 3226 
+C 934 3226 262 2560 262 1568 
+C 262 570 934 -96 1901 -96 
+z
+M 1901 627 
+C 1414 627 1088 1011 1088 1568 
+C 1088 2125 1414 2502 1901 2502 
+C 2387 2502 2714 2125 2714 1568 
+C 2714 1011 2387 627 1901 627 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-a3" d="M 1594 -96 
+C 2432 -96 2957 307 2957 947 
+C 2957 1466 2611 1824 2022 1888 
+L 1517 1946 
+C 1216 1978 1069 2080 1069 2259 
+C 1069 2464 1267 2586 1581 2586 
+C 1914 2586 2118 2477 2138 2234 
+L 2931 2234 
+C 2893 2899 2381 3226 1594 3226 
+C 794 3226 288 2842 288 2214 
+C 288 1677 653 1331 1242 1267 
+L 1734 1216 
+C 2003 1190 2157 1088 2157 902 
+C 2157 685 1946 550 1626 550 
+C 1254 550 1037 666 1011 922 
+L 186 922 
+C 218 256 736 -96 1594 -96 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-a4" d="M 1651 0 
+L 2586 0 
+L 2586 704 
+L 1933 704 
+C 1715 704 1638 794 1638 992 
+L 1638 2432 
+L 2586 2432 
+L 2586 3136 
+L 1638 3136 
+L 1638 4051 
+L 838 4051 
+L 838 3136 
+L 38 3136 
+L 38 2432 
+L 838 2432 
+L 838 806 
+C 838 224 1094 0 1651 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-97" d="M 1146 -1152 
+L 2266 -1152 
+C 3002 -1152 3309 -755 3309 -218 
+C 3309 301 2938 608 2285 608 
+L 1190 608 
+C 1050 608 947 685 947 813 
+C 947 947 1037 1018 1190 1018 
+L 1702 1018 
+C 2419 1018 2938 1434 2938 2093 
+L 2938 2304 
+C 2938 2394 2982 2432 3053 2432 
+L 3584 2432 
+L 3584 3136 
+L 3117 3136 
+C 2918 3136 2720 3059 2720 2739 
+L 2720 2650 
+C 2579 2982 2157 3226 1658 3226 
+C 838 3226 378 2758 378 2157 
+C 378 1869 499 1581 768 1389 
+C 403 1280 256 1037 256 781 
+C 256 582 358 397 531 275 
+C 269 134 134 -96 134 -358 
+C 134 -794 429 -1152 1146 -1152 
+z
+M 2202 -557 
+L 1254 -557 
+C 1005 -557 896 -442 896 -275 
+C 896 -109 1011 13 1261 13 
+L 2227 13 
+C 2419 13 2554 -90 2554 -256 
+C 2554 -454 2394 -557 2202 -557 
+z
+M 1658 1632 
+C 1338 1632 1133 1824 1133 2125 
+C 1133 2419 1331 2618 1658 2618 
+C 1984 2618 2182 2419 2182 2125 
+C 2182 1824 1990 1632 1658 1632 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-a2" d="M 461 0 
+L 1261 0 
+L 1261 1862 
+C 1261 2240 1427 2432 1792 2432 
+L 2451 2432 
+L 2451 3136 
+L 1882 3136 
+C 1491 3136 1242 2931 1165 2586 
+L 1165 3136 
+L 461 3136 
+L 461 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-95" d="M 1843 -96 
+C 2618 -96 3098 301 3290 922 
+L 2464 922 
+C 2368 710 2163 576 1843 576 
+C 1370 576 1082 832 1050 1286 
+L 3322 1286 
+C 3334 1421 3341 1523 3341 1626 
+C 3341 2611 2758 3226 1805 3226 
+C 890 3226 262 2586 262 1587 
+C 262 570 890 -96 1843 -96 
+z
+M 1043 1901 
+C 1069 2317 1357 2592 1805 2592 
+C 2278 2592 2534 2317 2534 1920 
+L 2534 1901 
+L 1043 1901 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-13"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(63.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a3" transform="translate(123.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(172.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-97" transform="translate(215.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a2" transform="translate(273.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(310.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a3" transform="translate(366 0)"/>
+    </g>
+   </g>
+   <g id="text_2">
+    <!-- Tables -->
+    <g style="fill: #f5f5f4" transform="translate(419.589844 71.7) scale(0.15 -0.15)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-17" d="M 1485 0 
+L 2310 0 
+L 2310 3706 
+L 3686 3706 
+L 3686 4480 
+L 102 4480 
+L 102 3706 
+L 1485 3706 
+L 1485 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-91" d="M 1402 -96 
+C 1850 -96 2202 70 2381 346 
+L 2381 333 
+C 2381 128 2515 0 2739 0 
+L 3334 0 
+L 3334 646 
+L 3053 646 
+C 2989 646 2963 672 2963 736 
+L 2963 2170 
+C 2963 2848 2509 3226 1747 3226 
+C 864 3226 422 2880 358 2234 
+L 1152 2234 
+C 1190 2483 1344 2579 1690 2579 
+C 2048 2579 2202 2445 2202 2125 
+L 2202 1978 
+L 1350 1926 
+C 589 1875 205 1478 205 896 
+C 205 282 666 -96 1402 -96 
+z
+M 1005 922 
+C 1005 1120 1158 1293 1478 1312 
+L 2202 1376 
+L 2202 1210 
+C 2202 774 1907 557 1504 557 
+C 1184 557 1005 698 1005 922 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-92" d="M 2176 -96 
+C 3072 -96 3680 570 3680 1568 
+C 3680 2560 3072 3226 2176 3226 
+C 1792 3226 1453 3091 1261 2842 
+L 1261 4480 
+L 461 4480 
+L 461 0 
+L 1165 0 
+L 1165 352 
+C 1363 70 1741 -96 2176 -96 
+z
+M 2048 627 
+C 1568 627 1248 1011 1248 1568 
+C 1248 2125 1568 2502 2048 2502 
+C 2534 2502 2854 2125 2854 1568 
+C 2854 1011 2534 627 2048 627 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-9c" d="M 1146 0 
+L 1830 0 
+L 1830 704 
+L 1466 704 
+C 1318 704 1261 768 1261 909 
+L 1261 4480 
+L 461 4480 
+L 461 634 
+C 461 179 672 0 1146 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-17"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-91" transform="translate(51.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-92" transform="translate(105.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9c" transform="translate(166.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(196.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a3" transform="translate(251.890625 0)"/>
+    </g>
+   </g>
+   <g id="text_3">
+    <!-- Rows, with a vector column -->
+    <g style="fill: #a8a29e" transform="translate(360.688203 90.8) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-15" d="M 589 0 
+L 1152 0 
+L 1152 1952 
+L 1830 1952 
+L 3360 0 
+L 4077 0 
+L 2541 1939 
+C 3430 1958 3949 2445 3949 3219 
+C 3949 4000 3411 4480 2483 4480 
+L 589 4480 
+L 589 0 
+z
+M 1152 2470 
+L 1152 3955 
+L 2477 3955 
+C 3053 3955 3373 3693 3373 3219 
+C 3373 2739 3053 2470 2477 2470 
+L 1152 2470 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-9f" d="M 1869 -90 
+C 2790 -90 3430 563 3430 1530 
+C 3430 2496 2790 3142 1869 3142 
+C 941 3142 301 2496 301 1530 
+C 301 563 941 -90 1869 -90 
+z
+M 1869 410 
+C 1267 410 864 858 864 1530 
+C 864 2202 1267 2650 1869 2650 
+C 2464 2650 2867 2202 2867 1530 
+C 2867 858 2464 410 1869 410 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a7" d="M 1107 0 
+L 1747 0 
+L 2477 2432 
+L 3200 0 
+L 3840 0 
+L 4800 3059 
+L 4230 3059 
+L 3507 614 
+L 2784 3059 
+L 2163 3059 
+L 1440 614 
+L 710 3059 
+L 141 3059 
+L 1107 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a3" d="M 1555 -90 
+C 2336 -90 2829 288 2829 877 
+C 2829 1376 2509 1690 1920 1754 
+L 1427 1811 
+C 1043 1856 870 1990 870 2234 
+C 870 2522 1133 2694 1549 2694 
+C 1978 2694 2234 2534 2259 2221 
+L 2803 2221 
+C 2771 2822 2304 3142 1549 3142 
+C 806 3142 326 2784 326 2208 
+C 326 1702 685 1395 1254 1338 
+L 1747 1286 
+C 2093 1248 2278 1107 2278 858 
+C 2278 550 2003 365 1568 365 
+C 1082 365 819 531 787 864 
+L 224 864 
+C 250 243 736 -90 1555 -90 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-131" d="M 525 -749 
+L 870 -749 
+C 1088 -749 1216 -634 1216 -365 
+L 1216 826 
+L 525 826 
+L 525 0 
+L 870 0 
+L 870 -346 
+C 870 -384 851 -410 794 -410 
+L 525 -410 
+L 525 -749 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-3" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-99" d="M 512 0 
+L 1056 0 
+L 1056 3059 
+L 512 3059 
+L 512 0 
+z
+M 474 3712 
+L 1094 3712 
+L 1094 4422 
+L 474 4422 
+L 474 3712 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a4" d="M 1600 0 
+L 2381 0 
+L 2381 480 
+L 1754 480 
+C 1504 480 1408 582 1408 813 
+L 1408 2579 
+L 2381 2579 
+L 2381 3059 
+L 1408 3059 
+L 1408 3974 
+L 870 3974 
+L 870 3059 
+L 51 3059 
+L 51 2579 
+L 870 2579 
+L 870 717 
+C 870 205 1088 0 1600 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-98" d="M 512 0 
+L 1056 0 
+L 1056 1773 
+C 1056 2298 1395 2650 1901 2650 
+C 2381 2650 2675 2381 2675 1792 
+L 2675 0 
+L 3219 0 
+L 3219 1837 
+C 3219 2694 2746 3142 1997 3142 
+C 1600 3142 1261 3002 1056 2714 
+L 1056 4480 
+L 512 4480 
+L 512 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-91" d="M 1382 -90 
+C 1882 -90 2253 102 2426 448 
+L 2426 314 
+C 2426 115 2547 0 2752 0 
+L 3213 0 
+L 3213 461 
+L 2950 461 
+C 2880 461 2848 493 2848 570 
+L 2848 2093 
+C 2848 2778 2426 3142 1696 3142 
+C 902 3142 467 2848 397 2221 
+L 941 2221 
+C 1005 2573 1222 2688 1658 2688 
+C 2106 2688 2323 2502 2323 2067 
+L 2323 1888 
+L 1357 1837 
+C 608 1792 243 1402 243 858 
+C 243 282 678 -90 1382 -90 
+z
+M 794 870 
+C 794 1146 986 1370 1421 1395 
+L 2323 1459 
+L 2323 1242 
+C 2323 678 1984 371 1440 371 
+C 1037 371 794 570 794 870 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a6" d="M 1382 0 
+L 1997 0 
+L 3283 3059 
+L 2675 3059 
+L 1690 595 
+L 698 3059 
+L 90 3059 
+L 1382 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-95" d="M 1818 -90 
+C 2502 -90 2970 275 3168 864 
+L 2611 864 
+C 2477 557 2202 378 1818 378 
+C 1229 378 870 755 845 1357 
+L 3206 1357 
+C 3219 1485 3226 1562 3226 1632 
+C 3226 2560 2669 3142 1773 3142 
+C 909 3142 301 2528 301 1542 
+C 301 550 909 -90 1818 -90 
+z
+M 845 1792 
+C 870 2317 1222 2694 1773 2694 
+C 2336 2694 2675 2336 2675 1830 
+L 2675 1792 
+L 845 1792 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-93" d="M 1798 -90 
+C 2618 -90 3123 448 3206 1050 
+L 2650 1050 
+C 2579 666 2259 410 1811 410 
+C 1254 410 864 845 864 1530 
+C 864 2208 1242 2650 1830 2650 
+C 2304 2650 2573 2381 2637 2074 
+L 3194 2074 
+C 3123 2694 2605 3142 1830 3142 
+C 922 3142 301 2470 301 1523 
+C 301 589 896 -90 1798 -90 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a2" d="M 512 0 
+L 1056 0 
+L 1056 1914 
+C 1056 2349 1222 2579 1606 2579 
+L 2253 2579 
+L 2253 3059 
+L 1658 3059 
+C 1286 3059 1069 2854 998 2541 
+L 998 3059 
+L 512 3059 
+L 512 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-9c" d="M 1114 0 
+L 1683 0 
+L 1683 480 
+L 1286 480 
+C 1120 480 1056 550 1056 717 
+L 1056 4480 
+L 512 4480 
+L 512 563 
+C 512 160 691 0 1114 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a5" d="M 1645 -90 
+C 2054 -90 2413 64 2618 384 
+L 2618 0 
+L 3104 0 
+L 3104 3059 
+L 2560 3059 
+L 2560 1286 
+C 2560 762 2227 410 1741 410 
+C 1267 410 986 678 986 1267 
+L 986 3059 
+L 442 3059 
+L 442 1222 
+C 442 365 902 -90 1645 -90 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-9d" d="M 512 0 
+L 1056 0 
+L 1056 1926 
+C 1056 2349 1344 2650 1741 2650 
+C 2144 2650 2362 2400 2362 1939 
+L 2362 0 
+L 2906 0 
+L 2906 1926 
+C 2906 2349 3194 2650 3584 2650 
+C 3994 2650 4218 2400 4218 1939 
+L 4218 0 
+L 4755 0 
+L 4755 1971 
+C 4755 2726 4371 3142 3674 3142 
+C 3264 3142 2931 2957 2746 2579 
+C 2598 2931 2285 3142 1856 3142 
+C 1466 3142 1171 2989 998 2656 
+L 998 3059 
+L 512 3059 
+L 512 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-9e" d="M 512 0 
+L 1056 0 
+L 1056 1773 
+C 1056 2298 1395 2650 1901 2650 
+C 2381 2650 2675 2381 2675 1792 
+L 2675 0 
+L 3219 0 
+L 3219 1837 
+C 3219 2694 2746 3142 1997 3142 
+C 1562 3142 1184 2976 998 2618 
+L 998 3059 
+L 512 3059 
+L 512 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-15"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(64.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a7" transform="translate(122.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(199.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-131" transform="translate(248.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(275.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a7" transform="translate(300.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(378.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(402.875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-98" transform="translate(442.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(499.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(525.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(578.265625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a6" transform="translate(603.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(654.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(709.46875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(762.375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(800.875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(858.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(895.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(921.375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(974.28125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(1032.28125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a5" transform="translate(1059.875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9d" transform="translate(1115.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(1196.875 0)"/>
+    </g>
+   </g>
+   <g id="text_4">
+    <!-- pg_pinecone -->
+    <g style="fill: #f5f5f4" transform="translate(396.548438 141.3) scale(0.15 -0.15)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-a0" d="M 461 -1152 
+L 1261 -1152 
+L 1261 288 
+C 1453 38 1792 -96 2176 -96 
+C 3072 -96 3680 570 3680 1568 
+C 3680 2560 3072 3226 2176 3226 
+C 1741 3226 1363 3066 1165 2784 
+L 1165 3136 
+L 461 3136 
+L 461 -1152 
+z
+M 2048 627 
+C 1568 627 1248 1011 1248 1568 
+C 1248 2125 1568 2502 2048 2502 
+C 2534 2502 2854 2125 2854 1568 
+C 2854 1011 2534 627 2048 627 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-161" d="M 32 -666 
+L 3923 -666 
+L 3923 0 
+L 32 0 
+L 32 -666 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-99" d="M 461 0 
+L 1261 0 
+L 1261 3136 
+L 461 3136 
+L 461 0 
+z
+M 435 3654 
+L 1293 3654 
+L 1293 4454 
+L 435 4454 
+L 435 3654 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-9e" d="M 461 0 
+L 1261 0 
+L 1261 1792 
+C 1261 2227 1517 2502 1926 2502 
+C 2317 2502 2534 2285 2534 1818 
+L 2534 0 
+L 3334 0 
+L 3334 1901 
+C 3334 2739 2854 3226 2086 3226 
+C 1702 3226 1344 3078 1165 2784 
+L 1165 3136 
+L 461 3136 
+L 461 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Bold-93" d="M 1818 -96 
+C 2701 -96 3238 493 3315 1139 
+L 2502 1139 
+C 2451 838 2202 627 1843 627 
+C 1389 627 1088 979 1088 1562 
+C 1088 2144 1382 2502 1856 2502 
+C 2227 2502 2438 2298 2490 2061 
+L 3302 2061 
+C 3238 2758 2675 3226 1862 3226 
+C 902 3226 262 2541 262 1555 
+C 262 608 858 -96 1818 -96 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-a0"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-97" transform="translate(61.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-161" transform="translate(118.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a0" transform="translate(179.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(241 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e" transform="translate(267.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(325.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-93" transform="translate(381.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(435.8125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e" transform="translate(494.8125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(553.109375 0)"/>
+    </g>
+   </g>
+   <g id="text_5">
+    <!-- native -->
+    <g style="fill: #f5f5f4" transform="translate(247.4 173.8) scale(0.15 -0.15)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-a6" d="M 1331 0 
+L 2246 0 
+L 3520 3136 
+L 2630 3136 
+L 1792 858 
+L 947 3136 
+L 58 3136 
+L 1331 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-91" transform="translate(58.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(111.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(154.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a6" transform="translate(180.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(234.109375 0)"/>
+    </g>
+   </g>
+   <g id="text_6">
+    <!-- DEFAULT -->
+    <g style="fill: #ffffff" transform="translate(304.99 172.4) scale(0.11 -0.11)">
+     <defs>
+      <path id="JetBrainsMono-Bold-21" d="M 480 0 
+L 480 4672 
+L 1869 4672 
+Q 2342 4672 2691 4489 
+Q 3040 4307 3232 3980 
+Q 3424 3654 3424 3213 
+L 3424 1466 
+Q 3424 1024 3232 694 
+Q 3040 365 2691 182 
+Q 2342 0 1869 0 
+L 480 0 
+z
+M 1280 717 
+L 1869 717 
+Q 2214 717 2419 918 
+Q 2624 1120 2624 1466 
+L 2624 3213 
+Q 2624 3552 2419 3753 
+Q 2214 3955 1869 3955 
+L 1280 3955 
+L 1280 717 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-25" d="M 563 0 
+L 563 4672 
+L 3366 4672 
+L 3366 3968 
+L 1350 3968 
+L 1350 2752 
+L 3142 2752 
+L 3142 2074 
+L 1350 2074 
+L 1350 704 
+L 3366 704 
+L 3366 0 
+L 563 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-38" d="M 512 0 
+L 512 4672 
+L 3418 4672 
+L 3418 3930 
+L 1299 3930 
+L 1299 2682 
+L 3251 2682 
+L 3251 1939 
+L 1312 1939 
+L 1312 0 
+L 512 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-1" d="M 224 0 
+L 1402 4672 
+L 2432 4672 
+L 3616 0 
+L 2797 0 
+L 2541 1133 
+L 1299 1133 
+L 1043 0 
+L 224 0 
+z
+M 1446 1786 
+L 2394 1786 
+L 2112 3040 
+Q 2042 3354 1990 3606 
+Q 1939 3859 1920 3974 
+Q 1901 3859 1849 3606 
+Q 1798 3354 1728 3046 
+L 1446 1786 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-8e" d="M 1920 -64 
+Q 1235 -64 848 310 
+Q 461 685 461 1331 
+L 461 4672 
+L 1267 4672 
+L 1267 1338 
+Q 1267 1005 1433 819 
+Q 1600 634 1920 634 
+Q 2234 634 2403 819 
+Q 2573 1005 2573 1338 
+L 2573 4672 
+L 3379 4672 
+L 3379 1331 
+Q 3379 685 2995 310 
+Q 2611 -64 1920 -64 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-53" d="M 774 0 
+L 774 4672 
+L 1574 4672 
+L 1574 723 
+L 3558 723 
+L 3558 0 
+L 774 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="JetBrainsMono-Bold-89" d="M 1517 0 
+L 1517 3949 
+L 294 3949 
+L 294 4672 
+L 3546 4672 
+L 3546 3949 
+L 2323 3949 
+L 2323 0 
+L 1517 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#JetBrainsMono-Bold-21"/>
+     <use xlink:href="#JetBrainsMono-Bold-25" transform="translate(60 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-38" transform="translate(120 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-1" transform="translate(180 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-8e" transform="translate(240 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-53" transform="translate(300 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-89" transform="translate(360 0)"/>
+    </g>
+   </g>
+   <g id="text_7">
+    <!-- IVF + RaBitQ -->
+    <g style="fill: #a8a29e" transform="translate(263.716719 192.9) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-c" d="M 589 0 
+L 1152 0 
+L 1152 4480 
+L 589 4480 
+L 589 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-19" d="M 1766 0 
+L 2522 0 
+L 4166 4480 
+L 3533 4480 
+L 2144 608 
+L 749 4480 
+L 115 4480 
+L 1766 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-9" d="M 589 0 
+L 1152 0 
+L 1152 2029 
+L 3238 2029 
+L 3238 2560 
+L 1152 2560 
+L 1152 3955 
+L 3238 3955 
+L 3238 4480 
+L 589 4480 
+L 589 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-188" d="M 467 1632 
+L 1792 1632 
+L 1792 307 
+L 2272 307 
+L 2272 1632 
+L 3629 1632 
+L 3629 2080 
+L 2272 2080 
+L 2272 3398 
+L 1792 3398 
+L 1792 2080 
+L 467 2080 
+L 467 1632 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-5" d="M 589 0 
+L 2515 0 
+C 3373 0 3878 525 3878 1286 
+C 3878 1830 3578 2227 3123 2374 
+C 3501 2547 3750 2925 3750 3373 
+C 3750 4051 3245 4480 2426 4480 
+L 589 4480 
+L 589 0 
+z
+M 1152 518 
+L 1152 2112 
+L 2438 2112 
+C 2995 2112 3302 1830 3302 1331 
+C 3302 819 2989 518 2438 518 
+L 1152 518 
+z
+M 1152 2605 
+L 1152 3962 
+L 2349 3962 
+C 2867 3962 3174 3731 3174 3296 
+C 3174 2854 2874 2605 2349 2605 
+L 1152 2605 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-14" d="M 2387 0 
+L 4538 0 
+L 4538 499 
+L 3571 499 
+C 4115 870 4384 1523 4384 2323 
+C 4384 3782 3578 4570 2387 4570 
+C 1197 4570 384 3782 384 2298 
+C 384 800 1197 0 2387 0 
+z
+M 2387 525 
+C 1549 525 973 1114 973 2298 
+C 973 3462 1549 4045 2387 4045 
+C 3219 4045 3802 3462 3802 2298 
+C 3802 1114 3219 525 2387 525 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-c"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-19" transform="translate(27.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9" transform="translate(94.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(149.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-188" transform="translate(175.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(239.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-15" transform="translate(264.90625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(331.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-5" transform="translate(384.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(451.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(476.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-14" transform="translate(516.078125 0)"/>
+    </g>
+   </g>
+   <g id="text_8">
+    <!-- Smaller index than HNSW -->
+    <g style="fill: #a8a29e" transform="translate(225.522109 210.9) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-16" d="M 2048 -90 
+C 3072 -90 3699 461 3699 1312 
+C 3699 2016 3270 2445 2458 2560 
+L 1875 2637 
+C 1299 2720 1024 2944 1024 3322 
+C 1024 3782 1427 4070 2022 4070 
+C 2643 4070 3034 3782 3053 3315 
+L 3635 3315 
+C 3616 4090 3008 4570 2022 4570 
+C 1062 4570 442 4064 442 3296 
+C 442 2637 864 2221 1709 2106 
+L 2317 2022 
+C 2848 1946 3110 1690 3110 1274 
+C 3110 755 2701 416 2048 416 
+C 1318 416 877 781 877 1363 
+L 288 1363 
+C 294 467 954 -90 2048 -90 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-94" d="M 1766 -90 
+C 2272 -90 2662 115 2861 474 
+L 2861 0 
+L 3347 0 
+L 3347 4480 
+L 2803 4480 
+L 2803 2637 
+C 2611 2963 2240 3142 1766 3142 
+C 896 3142 301 2496 301 1530 
+C 301 563 896 -90 1766 -90 
+z
+M 1843 410 
+C 1261 410 864 858 864 1530 
+C 864 2202 1261 2650 1843 2650 
+C 2432 2650 2816 2202 2816 1530 
+C 2816 858 2432 410 1843 410 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-a8" d="M 102 0 
+L 768 0 
+L 1670 1171 
+L 2566 0 
+L 3232 0 
+L 2016 1581 
+L 3168 3059 
+L 2502 3059 
+L 1664 1952 
+L 832 3059 
+L 166 3059 
+L 1318 1581 
+L 102 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-b" d="M 3501 0 
+L 4064 0 
+L 4064 4480 
+L 3501 4480 
+L 3501 2624 
+L 1152 2624 
+L 1152 4480 
+L 589 4480 
+L 589 0 
+L 1152 0 
+L 1152 2093 
+L 3501 2093 
+L 3501 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-11" d="M 589 0 
+L 1152 0 
+L 1152 3622 
+L 3373 0 
+L 4064 0 
+L 4064 4480 
+L 3501 4480 
+L 3501 858 
+L 1280 4480 
+L 589 4480 
+L 589 0 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-1a" d="M 1402 0 
+L 2080 0 
+L 3059 3686 
+L 4032 0 
+L 4717 0 
+L 5926 4480 
+L 5318 4480 
+L 4346 755 
+L 3373 4480 
+L 2739 4480 
+L 1766 755 
+L 787 4480 
+L 186 4480 
+L 1402 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-16"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9d" transform="translate(62.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(144 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(196.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(224.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(252.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(306.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(343.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(369.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(393.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-94" transform="translate(450.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(510.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a8" transform="translate(563.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(615.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(641.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-98" transform="translate(681.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(738.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(791.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(848.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-b" transform="translate(874.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-11" transform="translate(946.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-16" transform="translate(1019.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-1a" transform="translate(1082.390625 0)"/>
+    </g>
+   </g>
+   <g id="text_9">
+    <!-- Faster at equal recall -->
+    <g style="fill: #a8a29e" transform="translate(239.960234 228.9) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-a1" d="M 2803 -1152 
+L 3347 -1152 
+L 3347 3059 
+L 2861 3059 
+L 2861 2579 
+C 2662 2938 2272 3142 1766 3142 
+C 896 3142 301 2496 301 1530 
+C 301 563 896 -90 1766 -90 
+C 2240 -90 2611 96 2803 422 
+L 2803 -1152 
+z
+M 1843 410 
+C 1261 410 864 858 864 1530 
+C 864 2202 1261 2650 1843 2650 
+C 2432 2650 2816 2202 2816 1530 
+C 2816 858 2432 410 1843 410 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-9"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(52.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(105.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(153.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(192.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(246.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(283.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(309 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(360.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(400.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(426.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a1" transform="translate(480.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a5" transform="translate(541.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(597.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(650.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(678.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(704.375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(738.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(792.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(846.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(899.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(927.171875 0)"/>
+    </g>
+   </g>
+   <g id="text_10">
+    <!-- native -->
+    <g style="fill: #f5f5f4" transform="translate(247.4 173.8) scale(0.15 -0.15)">
+     <use xlink:href="#GTPlanarVCTR-Bold-9e"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-91" transform="translate(58.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(111.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(154.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a6" transform="translate(180.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(234.109375 0)"/>
+    </g>
+   </g>
+   <g id="text_11">
+    <!-- DEFAULT -->
+    <g style="fill: #ffffff" transform="translate(304.99 172.4) scale(0.11 -0.11)">
+     <use xlink:href="#JetBrainsMono-Bold-21"/>
+     <use xlink:href="#JetBrainsMono-Bold-25" transform="translate(60 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-38" transform="translate(120 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-1" transform="translate(180 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-8e" transform="translate(240 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-53" transform="translate(300 0)"/>
+     <use xlink:href="#JetBrainsMono-Bold-89" transform="translate(360 0)"/>
+    </g>
+   </g>
+   <g id="text_12">
+    <!-- IVF + RaBitQ -->
+    <g style="fill: #a8a29e" transform="translate(263.716719 192.9) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-c"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-19" transform="translate(27.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9" transform="translate(94.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(149.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-188" transform="translate(175.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(239.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-15" transform="translate(264.90625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(331.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-5" transform="translate(384.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(451.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(476.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-14" transform="translate(516.078125 0)"/>
+    </g>
+   </g>
+   <g id="text_13">
+    <!-- Smaller index than HNSW -->
+    <g style="fill: #a8a29e" transform="translate(225.522109 210.9) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-16"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9d" transform="translate(62.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(144 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(196.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(224.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(252.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(306.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(343.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(369.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(393.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-94" transform="translate(450.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(510.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a8" transform="translate(563.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(615.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(641.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-98" transform="translate(681.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(738.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(791.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(848.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-b" transform="translate(874.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-11" transform="translate(946.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-16" transform="translate(1019.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-1a" transform="translate(1082.390625 0)"/>
+    </g>
+   </g>
+   <g id="text_14">
+    <!-- Faster at equal recall -->
+    <g style="fill: #a8a29e" transform="translate(239.960234 228.9) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-9"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(52.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(105.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(153.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(192.09375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(246.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(283.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(309 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(360.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(400.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(426.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a1" transform="translate(480.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a5" transform="translate(541.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(597.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(650.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(678.671875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(704.375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(738.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(792.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(846.484375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(899.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(927.171875 0)"/>
+    </g>
+   </g>
+   <g id="text_15">
+    <!-- pgvector -->
+    <g style="fill: #f5f5f4" transform="translate(433.325859 191.8) scale(0.15 -0.15)">
+     <use xlink:href="#GTPlanarVCTR-Bold-a0"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-97" transform="translate(61.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a6" transform="translate(119.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(173.109375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-93" transform="translate(228.8125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(283.21875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(325.015625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a2" transform="translate(384.125 0)"/>
+    </g>
+   </g>
+   <g id="text_16">
+    <!-- HNSW or IVFFlat -->
+    <g style="fill: #a8a29e" transform="translate(414.818125 210.9) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-b"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-11" transform="translate(72.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-16" transform="translate(145.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-1a" transform="translate(208.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(303.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(329.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(387.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(424.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-c" transform="translate(449.90625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-19" transform="translate(477.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9" transform="translate(544.109375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9" transform="translate(599.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(653.59375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-91" transform="translate(682.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(733.875 0)"/>
+    </g>
+   </g>
+   <g id="text_17">
+    <!-- remote -->
+    <g style="fill: #f5f5f4" transform="translate(580.397109 191.8) scale(0.15 -0.15)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-9d" d="M 461 0 
+L 1261 0 
+L 1261 1901 
+C 1261 2266 1472 2502 1779 2502 
+C 2106 2502 2272 2304 2272 1926 
+L 2272 0 
+L 3072 0 
+L 3072 1901 
+C 3072 2266 3277 2502 3590 2502 
+C 3917 2502 4090 2304 4090 1926 
+L 4090 0 
+L 4883 0 
+L 4883 1984 
+C 4883 2771 4467 3226 3744 3226 
+C 3366 3226 3053 3072 2835 2720 
+C 2682 3040 2381 3226 1978 3226 
+C 1626 3226 1350 3104 1165 2803 
+L 1165 3136 
+L 461 3136 
+L 461 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-a2"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(37.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9d" transform="translate(92.90625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(175.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(233.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(275.59375 0)"/>
+    </g>
+   </g>
+   <g id="text_18">
+    <!-- Runs on Pinecone -->
+    <g style="fill: #a8a29e" transform="translate(552.089609 210.9) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-13" d="M 589 0 
+L 1152 0 
+L 1152 1875 
+L 2419 1875 
+C 3347 1875 3885 2374 3885 3187 
+C 3885 3987 3347 4480 2419 4480 
+L 589 4480 
+L 589 0 
+z
+M 1152 2406 
+L 1152 3955 
+L 2400 3955 
+C 2982 3955 3309 3680 3309 3187 
+C 3309 2688 2982 2406 2400 2406 
+L 1152 2406 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-15"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a5" transform="translate(66.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(122.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(179.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(227.984375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(253.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(311.78125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(369.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-13" transform="translate(394.78125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(459.078125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(483.171875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(540.46875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(594.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(647.875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(705.96875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(763.265625 0)"/>
+    </g>
+   </g>
+   <g id="text_19">
+    <!-- Application -->
+    <g style="fill: #f5f5f4" transform="translate(27.851172 81.25) scale(0.15 -0.15)">
+     <defs>
+      <path id="GTPlanarVCTR-Bold-4" d="M 102 0 
+L 1011 0 
+L 1427 1203 
+L 3206 1203 
+L 3622 0 
+L 4525 0 
+L 2886 4480 
+L 1747 4480 
+L 102 0 
+z
+M 1683 1952 
+L 2317 3776 
+L 2950 1952 
+L 1683 1952 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Bold-4"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a0" transform="translate(72.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a0" transform="translate(133.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9c" transform="translate(195.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(225.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-93" transform="translate(252.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-91" transform="translate(306.890625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-a4" transform="translate(359.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(402.6875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(429.1875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e" transform="translate(488.1875 0)"/>
+    </g>
+   </g>
+   <g id="text_20">
+    <!-- pgvector -->
+    <g style="fill: #f5f5f4" transform="translate(130.127578 51.8) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-a0" d="M 512 -1152 
+L 1056 -1152 
+L 1056 422 
+C 1254 96 1626 -90 2093 -90 
+C 2970 -90 3558 563 3558 1530 
+C 3558 2496 2970 3142 2093 3142 
+C 1587 3142 1197 2938 998 2579 
+L 998 3059 
+L 512 3059 
+L 512 -1152 
+z
+M 2016 410 
+C 1427 410 1043 858 1043 1530 
+C 1043 2202 1427 2650 2016 2650 
+C 2605 2650 2995 2202 2995 1530 
+C 2995 858 2605 410 2016 410 
+z
+" transform="scale(0.015625)"/>
+      <path id="GTPlanarVCTR-Regular-97" d="M 1165 -1152 
+L 2202 -1152 
+C 2899 -1152 3194 -787 3194 -288 
+C 3194 205 2816 480 2246 480 
+L 1120 480 
+C 947 480 794 570 794 749 
+C 794 928 928 1018 1120 1018 
+L 1651 1018 
+C 2342 1018 2835 1434 2835 2061 
+L 2835 2438 
+C 2835 2534 2880 2579 2976 2579 
+L 3456 2579 
+L 3456 3059 
+L 3014 3059 
+C 2778 3059 2630 2982 2630 2675 
+L 2630 2579 
+C 2509 2899 2118 3142 1626 3142 
+C 883 3142 429 2701 429 2099 
+C 429 1811 544 1504 845 1306 
+C 493 1229 307 1011 307 730 
+C 307 531 416 346 595 237 
+C 326 102 186 -134 186 -390 
+C 186 -845 493 -1152 1165 -1152 
+z
+M 2170 -730 
+L 1222 -730 
+C 845 -730 710 -563 710 -352 
+C 710 -134 858 58 1242 58 
+L 2214 58 
+C 2477 58 2662 -77 2662 -307 
+C 2662 -608 2438 -730 2170 -730 
+z
+M 1626 1446 
+C 1203 1446 947 1696 947 2080 
+C 947 2464 1197 2714 1632 2714 
+C 2061 2714 2310 2464 2310 2080 
+C 2310 1696 2067 1446 1626 1446 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-a0"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-97" transform="translate(60.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a6" transform="translate(116.71875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(167.71875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(222.21875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(275.125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9f" transform="translate(313.625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(371.71875 0)"/>
+    </g>
+   </g>
+   <g id="text_21">
+    <!-- SQL -->
+    <g style="fill: #f5f5f4" transform="translate(144.214297 68) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-f" d="M 589 0 
+L 3290 0 
+L 3290 525 
+L 1152 525 
+L 1152 4480 
+L 589 4480 
+L 589 0 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-16"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-14" transform="translate(62.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-f" transform="translate(138.203125 0)"/>
+    </g>
+   </g>
+   <g id="text_22">
+    <!-- Pinecone -->
+    <g style="fill: #f5f5f4" transform="translate(783.244922 191.8) scale(0.15 -0.15)">
+     <use xlink:href="#GTPlanarVCTR-Bold-13"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-99" transform="translate(65.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e" transform="translate(92.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(150.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-93" transform="translate(206.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9f" transform="translate(260.609375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-9e" transform="translate(319.609375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Bold-95" transform="translate(377.90625 0)"/>
+    </g>
+   </g>
+   <g id="text_23">
+    <!-- Serverless index -->
+    <g style="fill: #a8a29e" transform="translate(767.203516 210.9) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-16"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(62.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(117.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a6" transform="translate(154.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(205.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a2" transform="translate(260.296875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(296.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(323.90625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(378.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(426.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-3" transform="translate(474.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-99" transform="translate(500.40625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(524.5 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-94" transform="translate(581.796875 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(642.109375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a8" transform="translate(695.015625 0)"/>
+    </g>
+   </g>
+   <g id="text_24">
+    <!-- sync -->
+    <g style="fill: #f5f5f4" transform="translate(710.157734 179.1) scale(0.13 -0.13)">
+     <defs>
+      <path id="GTPlanarVCTR-Regular-a9" d="M 179 -1152 
+L 819 -1152 
+C 1242 -1152 1414 -1005 1555 -691 
+L 3251 3059 
+L 2630 3059 
+L 1677 819 
+L 717 3059 
+L 90 3059 
+L 1382 198 
+L 1101 -429 
+C 1024 -589 922 -653 704 -653 
+L 179 -653 
+L 179 -1152 
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a9" transform="translate(47.203125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9e" transform="translate(98.8125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-93" transform="translate(156.109375 0)"/>
+    </g>
+   </g>
+   <g id="text_25">
+    <!-- results -->
+    <g style="fill: #f5f5f4" transform="translate(703.802969 222.2) scale(0.13 -0.13)">
+     <use xlink:href="#GTPlanarVCTR-Regular-a2"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-95" transform="translate(34.109375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(88.609375 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a5" transform="translate(136.703125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-9c" transform="translate(192.390625 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a4" transform="translate(218.78125 0)"/>
+     <use xlink:href="#GTPlanarVCTR-Regular-a3" transform="translate(258.78125 0)"/>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p2714cbf321">
+   <rect x="0" y="0" width="892.7875" height="276.9"/>
+  </clipPath>
+ </defs>
 </svg>
