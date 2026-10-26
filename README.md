@@ -69,6 +69,24 @@ SELECT id FROM items ORDER BY embedding <=> '[1,2,4]' LIMIT 2;
 For a full walkthrough on a sample table, including semantic search with embeddings, see the
 [quickstart in the pg_pinecone docs][quickstart].
 
+## Build from source
+
+pg_pinecone is built with [pgrx](https://github.com/pgcentralfoundation/pgrx). You need a Rust
+toolchain and the headers of the Postgres you're building for (`pg_config` on your `PATH`, or
+pass its path to `--pg-config`).
+
+```bash
+git clone https://github.com/pinecone-io/pg_pinecone.git
+cd pg_pinecone/pg_pinecone
+cargo install cargo-pgrx --version 0.19.2 --locked
+cargo pgrx init --pg17 "$(which pg_config)"   # use --pg18 for PostgreSQL 18
+cargo pgrx install --release                  # builds and installs into that Postgres
+```
+
+`cargo pgrx install` writes the extension into the Postgres `pg_config` points at; then
+`CREATE EXTENSION vector; CREATE EXTENSION pg_pinecone;` as above. On x86_64 the build targets your
+own CPU, so it runs anywhere you build it. For running the tests, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Documentation
 
 The [pg_pinecone docs][docs] on docs.pinecone.io cover installation, the storage engines,
