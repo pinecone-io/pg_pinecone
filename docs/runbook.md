@@ -750,6 +750,8 @@ There is no upgrade path: 0.10.0 renamed the extension (`pinegres` became `pg_pi
 
 ## See also
 
+- [`disaster-recovery.md`](disaster-recovery.md#restoring-both-postgres-and-pinecone-together) —
+  restoring a `pg_dump`/basebackup and a Pinecone backup together (order, direction of truth).
 - [Consistency with the remote engine](https://docs.pinecone.io/guides/pg-pinecone/storage-engines#consistency-with-the-remote-engine) — what `async` buys
   and costs.
 - [`reference.md`](reference.md) — every GUC, function support matrix, and error message.

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# LIVE disaster-recovery drill gating the pg_pinecone 0.4.0 release
-# (docs/disaster-recovery.md): restore -> repoint -> recover_from_remote,
-# plus the AM-path concurrent-writer/quiescence probe. Precedent:
+# LIVE disaster-recovery drill for pg_pinecone
+# (docs/disaster-recovery.md): restore -> repoint -> recover_from_remote, the
+# joint Postgres+Pinecone restore, plus the AM-path concurrent-writer/quiescence
+# probe. Version-agnostic: asserts the installed extension matches the crate's
+# own Cargo version, so it tracks releases instead of pinning one. Precedent:
 # scripts/vacuum-drill.sh / scripts/install-drill.sh (shared-pgrx-instance
 # restart pattern, API key via stdin heredoc only — never argv).
 #
@@ -29,6 +31,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PG_PINECONE_DIR="$REPO_ROOT/pg_pinecone"
 CLIENT_DIR="$REPO_ROOT/pg_pinecone-client"
+EXPECT_VER="$(grep -m1 '^version' "$PG_PINECONE_DIR/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 PG_CONFIG="$(cd "$PG_PINECONE_DIR" && cargo pgrx info pg-config pg17)"
 PGRX_HOME="${PGRX_HOME:-$HOME/.pgrx}"
 PGDATA="$PGRX_HOME/data-17"
@@ -41,6 +44,10 @@ TABLE_B="pg_pinecone_drill_b_$PID"
 INDEX_A="pg_pinecone-drill-a-$PID"
 INDEX_RESTORED="pg_pinecone-drill-restored-$PID"
 INDEX_MISMATCH="pg_pinecone-drill-mismatch-$PID"
+TABLE_C="pg_pinecone_drill_c_$PID"
+DBNAME_J="pg_pinecone_dr_drill_joint_$PID"
+INDEX_C_RESTORED="pg_pinecone-drill-c-restored-$PID"
+PGBIN="$(dirname "$PG_CONFIG")"
 BACKUP_NAME="pg_pinecone-drill-backup-$PID"
 API_VERSION="2026-04"
 BACKUP_API_VERSION="2026-07"
@@ -56,7 +63,7 @@ echo "== disaster-recovery-drill: db=$DBNAME table_a=$TABLE_A table_b=$TABLE_B p
 # macOS ships bash 3.2 (no associative arrays) — per-leg RESULT_<LEG>/
 # NOTE_<LEG> scalars, set/read via printf -v / indirect (${!name})
 # expansion instead of declare -A.
-LEG_ORDER=(SETUP BACKUP RESTORE REPOINT RECOVER CONCURRENT TEARDOWN)
+LEG_ORDER=(SETUP BACKUP RESTORE REPOINT RECOVER CONCURRENT JOINT TEARDOWN)
 CREATED_INDEXES=()
 BACKUP_ID=""
 
@@ -106,6 +113,8 @@ cleanup() {
         fi
         psql -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -d postgres \
             -c "DROP DATABASE IF EXISTS \"$DBNAME\" WITH (FORCE)" >/dev/null 2>&1
+        psql -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -d postgres \
+            -c "DROP DATABASE IF EXISTS \"$DBNAME_J\" WITH (FORCE)" >/dev/null 2>&1
     fi
 
     # bash 3.2: "${arr[@]}" on a possibly-empty array throws "unbound
@@ -196,7 +205,7 @@ wait_index_ready() {
 # ---------------------------------------------------------------------------
 # LEG 1: SETUP
 # ---------------------------------------------------------------------------
-record SETUP RUNNING "installing 0.4.0 + restart, tracking table A (trigger path)"
+record SETUP RUNNING "installing $EXPECT_VER + restart, tracking table A (trigger path)"
 
 if cargo pgrx status pg17 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -qi "is running"; then
     was_running=1
@@ -236,8 +245,12 @@ db_noerr() { psql -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -d "$DBNAME" "$@"; }
 db -c "CREATE EXTENSION IF NOT EXISTS vector"
 db -c "CREATE EXTENSION pg_pinecone"
 installed_version="$(db -tAc "SELECT extversion FROM pg_extension WHERE extname='pg_pinecone'")"
-if [ "$installed_version" != "0.4.0" ]; then
-    record SETUP FAIL "expected extversion 0.4.0, got '$installed_version'"
+if [ -z "$installed_version" ]; then
+    record SETUP FAIL "pg_pinecone extension not installed"
+    exit 1
+fi
+if [ -n "$EXPECT_VER" ] && [ "$installed_version" != "$EXPECT_VER" ]; then
+    record SETUP FAIL "expected extversion $EXPECT_VER (crate Cargo.toml), got '$installed_version'"
     exit 1
 fi
 
@@ -246,11 +259,12 @@ SELECT pinecone.set_api_key('$PINECONE_API_KEY');
 SQL
 
 if [ "$LEG6_ONLY" = "1" ]; then
-    record SETUP PASS "leg6-only rerun: 0.4.0 installed+restarted, db/extension/key ready (table-A legs skipped)"
+    record SETUP PASS "leg6-only rerun: $EXPECT_VER installed+restarted, db/extension/key ready (table-A legs skipped)"
     record BACKUP SKIPPED "leg6-only rerun"
     record RESTORE SKIPPED "leg6-only rerun"
     record REPOINT SKIPPED "leg6-only rerun"
     record RECOVER SKIPPED "leg6-only rerun"
+    record JOINT SKIPPED "leg6-only rerun"
 else
 
 db -c "CREATE TABLE $TABLE_A (id bigint PRIMARY KEY, embedding vector($DIM), tag int, label text)"
@@ -296,7 +310,7 @@ fi
 # Snapshot for the RECOVER leg's bit-fidelity check.
 db -c "CREATE TABLE drill_originals AS SELECT id, embedding, tag, label FROM $TABLE_A"
 
-record SETUP PASS "0.4.0 installed+restarted; table A promoted (trigger, index=$INDEX_A); $N_ROWS rows flushed; remote count verified via describe_index_stats"
+record SETUP PASS "$EXPECT_VER installed+restarted; table A promoted (trigger, index=$INDEX_A); $N_ROWS rows flushed; remote count verified via describe_index_stats"
 
 # ---------------------------------------------------------------------------
 # LEG 2: BACKUP (may be plan-gated)
@@ -678,5 +692,109 @@ else
 fi
 
 db -c "ALTER SYSTEM SET pinecone.outbox_max_attempts = $orig_max_attempts" -c "SELECT pg_reload_conf()"
+
+# ---------------------------------------------------------------------------
+# LEG 7: JOINT (restore Postgres AND Pinecone together)
+# docs/disaster-recovery.md#restoring-both-postgres-and-pinecone-together
+# ---------------------------------------------------------------------------
+dbj() { psql -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -v ON_ERROR_STOP=1 -d "$DBNAME_J" "$@"; }
+
+c_remote_count() { describe_stats "$1" | jq -r '.totalVectorCount // 0'; }
+
+wait_drain_j() {
+    local tbl="$1" tries=0 row qs bl
+    while [ "$tries" -lt 120 ]; do
+        row="$(dbj -tAc "SELECT queue_state, backlog FROM pinecone.status() WHERE table_name = 'public.$tbl'")"
+        qs="${row%%|*}"; bl="${row##*|}"
+        [ "$qs" = "idle" ] && [ "${bl:-0}" = "0" ] && return 0
+        [ "$qs" = "parked" ] && return 1
+        tries=$((tries + 1)); sleep 1
+    done
+    return 1
+}
+
+readiness_sync_ok() {
+    local detail
+    detail="$(dbj -tAc "SELECT detail FROM pinecone.backup_readiness('$1') WHERE \"check\" = 'sync'")"
+    echo "$detail" | grep -q 'diff=0' && echo "$detail" | grep -q 'outbox_backlog=0'
+}
+
+run_joint() {
+    local M=200 dumpfile src_count r_before r_after secret_rows restored_count
+    local null_after_detach reattach_mismatch local_after_attach c_index_name
+
+    record JOINT RUNNING "AM table dumped+restored into a keyless DB; order-safety, sever, full sync, detached attach"
+
+    db -c "CREATE TABLE $TABLE_C (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, embedding vector($DIM), tag int)"
+    db -c "CREATE INDEX ${TABLE_C}_idx ON $TABLE_C USING pinecone (embedding vector_cosine_ops)"
+    c_index_name="$(db -tAc "SELECT index_name FROM pinecone.tables WHERE relid = '$TABLE_C'::regclass")"
+    [ -n "$c_index_name" ] && CREATED_INDEXES+=("$c_index_name")
+
+    db -c "INSERT INTO $TABLE_C (embedding, tag)
+           SELECT (ARRAY(SELECT ((((gs + d) % 17) - 8)::float8 / 8.0) FROM generate_series(0, $((DIM - 1))) d))::vector, gs
+           FROM generate_series(1, $M) gs"
+    [ "$(db -tAc "SELECT pinecone.flush('$TABLE_C', 120000)")" = "t" ] || { record JOINT FAIL "source TABLE_C never drained"; return 1; }
+    src_count="$(c_remote_count "$c_index_name")"
+    [ "$src_count" = "$M" ] || { record JOINT FAIL "source remote count $src_count != $M"; return 1; }
+
+    dumpfile="$(mktemp -t pg_pinecone_joint.XXXXXX)"
+    "$PGBIN/pg_dump" -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -Fc -d "$DBNAME" -f "$dumpfile" \
+        || { record JOINT FAIL "pg_dump failed"; rm -f "$dumpfile"; return 1; }
+
+    psql_pg -d postgres -c "CREATE DATABASE \"$DBNAME_J\"" || { record JOINT FAIL "createdb joint failed"; rm -f "$dumpfile"; return 1; }
+    # pg_restore of a pg_pinecone DB emits non-fatal notices; ignore its exit, verify the data instead.
+    "$PGBIN/pg_restore" -h 127.0.0.1 -p "$PORT" -U "$(whoami)" -d "$DBNAME_J" "$dumpfile" >/dev/null 2>&1
+    rm -f "$dumpfile"
+    [ "$(dbj -tAc "SELECT to_regclass('public.$TABLE_C') IS NOT NULL")" = "t" ] \
+        || { record JOINT FAIL "restore did not recreate $TABLE_C"; return 1; }
+
+    # The dump excludes pinecone.secret by design: the restored DB is keyless,
+    # so every queued rebuild waits instead of firing delete_all at the index.
+    secret_rows="$(dbj -tAc "SELECT count(*) FROM pinecone.secret")"
+    [ "$secret_rows" = "0" ] || { record JOINT FAIL "restored DB unexpectedly has a key ($secret_rows rows in pinecone.secret)"; return 1; }
+
+    # Drop the other restored tables so keying this DB later can't fire THEIR rebuilds.
+    dbj -c "DROP TABLE IF EXISTS $TABLE_A, $TABLE_B CASCADE" >/dev/null 2>&1
+
+    # ORDER SAFETY: a keyless restore must not have rewritten the source's index.
+    sleep 5
+    r_before="$(c_remote_count "$c_index_name")"
+    [ "$r_before" = "$M" ] || { record JOINT FAIL "keyless restore clobbered the source index (count $r_before != $M)"; return 1; }
+
+    # SEVER before keying: AM lane -> DROP INDEX discards the queued rebuild, Pinecone untouched.
+    dbj -c "DROP INDEX ${TABLE_C}_idx" || { record JOINT FAIL "sever DROP INDEX failed"; return 1; }
+    r_after="$(c_remote_count "$c_index_name")"
+    [ "$r_after" = "$M" ] || { record JOINT FAIL "sever disturbed the source index (count $r_after != $M)"; return 1; }
+
+    dbj -c "CREATE TABLE drill_c_j_originals AS SELECT id, embedding FROM $TABLE_C"
+
+    dbj -c "SELECT pinecone.set_api_key('$PINECONE_API_KEY')" || { record JOINT FAIL "set_api_key in joint DB failed"; return 1; }
+    dbj -c "SELECT pinecone.create_index('$TABLE_C', 'embedding', engine => 'remote', index_name => '$INDEX_C_RESTORED')" \
+        || { record JOINT FAIL "create_index to restored index failed"; return 1; }
+    CREATED_INDEXES+=("$INDEX_C_RESTORED")
+
+    # FULL storage -> local is truth -> sync (local -> remote).
+    dbj -c "SELECT pinecone.sync('$TABLE_C')" || { record JOINT FAIL "sync failed"; return 1; }
+    wait_drain_j "$TABLE_C" || { record JOINT FAIL "full-path sync never drained"; return 1; }
+    restored_count="$(c_remote_count "$INDEX_C_RESTORED")"
+    [ "$restored_count" = "$M" ] || { record JOINT FAIL "restored index count $restored_count != $M after sync"; return 1; }
+    readiness_sync_ok "$TABLE_C" || { record JOINT FAIL "backup_readiness sync row not clean after full sync"; return 1; }
+
+    # DETACHED storage -> remote is truth -> attach (remote -> local).
+    dbj -c "SELECT pinecone.detach_storage('$TABLE_C', force => true)" || { record JOINT FAIL "detach_storage failed"; return 1; }
+    null_after_detach="$(dbj -tAc "SELECT count(*) FROM $TABLE_C WHERE embedding IS NOT NULL")"
+    [ "$null_after_detach" = "0" ] || { record JOINT FAIL "detach left $null_after_detach non-NULL vectors locally"; return 1; }
+    dbj -c "SELECT pinecone.attach_storage('$TABLE_C')" || { record JOINT FAIL "attach_storage failed"; return 1; }
+    wait_drain_j "$TABLE_C" || { record JOINT FAIL "attach recover never drained"; return 1; }
+    local_after_attach="$(dbj -tAc "SELECT count(*) FROM $TABLE_C WHERE embedding IS NOT NULL")"
+    reattach_mismatch="$(dbj -tAc "SELECT count(*) FROM $TABLE_C t JOIN drill_c_j_originals o USING (id) WHERE t.embedding IS DISTINCT FROM o.embedding")"
+    [ "$local_after_attach" = "$M" ] || { record JOINT FAIL "attach restored $local_after_attach/$M vectors locally"; return 1; }
+    [ "$reattach_mismatch" = "0" ] || { record JOINT FAIL "attach restored $reattach_mismatch rows with wrong bytes"; return 1; }
+    readiness_sync_ok "$TABLE_C" || { record JOINT FAIL "backup_readiness sync row not clean after attach"; return 1; }
+
+    record JOINT PASS "keyless restore left the source index intact ($M); sever discarded the rebuild; create_index+sync repopulated the restored index to $M (readiness diff=0); detach(force)->attach round-tripped all $M vectors byte-exact (readiness diff=0)"
+}
+
+run_joint
 
 echo "== all legs complete; handing off to teardown (EXIT trap) ==" >&2

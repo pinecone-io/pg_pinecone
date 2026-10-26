@@ -227,6 +227,69 @@ into an index of its own, before the key goes in: `repoint` a trigger-lane table
 table, which `repoint` refuses, `DROP INDEX` the restored one (it forgets the row, discards the queued
 rebuild and leaves Pinecone alone) and `create_index(.., engine => 'remote', index_name => 'restored')`.
 
+## Restoring both Postgres and Pinecone together
+
+The two sections above each assume one side survived — [Pinecone gone, Postgres
+live](#the-story-end-to-end), or [Postgres restored, Pinecone
+live](#restoring-the-postgres-database-pg_dump--pg_restore). A full-cluster loss is neither: you
+restore a `pg_dump`/basebackup **and** a Pinecone backup, taken at different times, and must land on
+one consistent state. Order is load-bearing, and the default direction of reconciliation depends on
+`storage`.
+
+### Order (do not reorder)
+
+A restored registration rewrites the family it names the instant a key is present (see
+[above](#restoring-the-postgres-database-pg_dump--pg_restore)): the rebuilt index queues a
+`delete_all` + backfill against whatever index its row names. If that is your freshly-restored
+Pinecone index, you overwrite it with the *staler* dumped heap. So:
+
+1. **Restore the Postgres DB with no key.** `pinecone.secret` is not dumped, so this is the default —
+   just do not store it yet. Every queued rebuild waits.
+2. **Sever the restored registration from the restored index before the key goes in.**
+   - Trigger lane: `SELECT pinecone.repoint(tbl, 'restored');`
+   - AM lane (`repoint` refuses): `DROP INDEX` the restored one — it forgets the row and discards the
+     queued rebuild, Pinecone untouched (see above) — then
+     `SELECT pinecone.create_index(.., engine => 'remote', index_name => 'restored');`.
+3. **Store the key** — `SELECT pinecone.set_api_key('...');`.
+4. **Reconcile in the direction set by `storage`** (next).
+5. **Verify** (below).
+
+### Direction of truth — by `storage`
+
+| `storage` | Authoritative copy | Reconcile with |
+| --- | --- | --- |
+| `full` | the local heap column | `pinecone.sync(tbl)` — local -> remote |
+| `detached` | the Pinecone index | `pinecone.attach_storage(tbl)` (or `recover_from_remote`) — remote -> local |
+
+`full` means the heap column is a complete copy, self-consistent as of the dump; push it out and the
+restored index matches it. `detached` means the local column is NULL — Pinecone is the only full
+copy, so pull it back.
+
+**Tie-break.** If the *other* backup is clearly newer (compare the dump's time against the backup's
+`created_at`), invert the default: a `full` table whose Pinecone backup is newer ->
+`recover_from_remote(tbl, overwrite => true)`. Pick ONE direction. **Running both clobbers whichever
+copy was fresher**, and nothing restores writes made after the older of the two backups — worst-case
+RPO is that older timestamp (plus Pinecone's 15-minute lag,
+[qualifier 1](#the-qualifiers-read-these-before-you-page-anyone)).
+
+### Verify
+
+```sql
+SELECT * FROM pinecone.backup_readiness(tbl);  -- the `sync` row must read diff=0, outbox_backlog=0
+```
+
+Then one real query per lane.
+
+### Partitioned tables
+
+Everything above holds per namespace for a [partition column](#tables-with-a-partition-column), with
+two joint-restore specifics:
+
+- `repoint` adopts the namespaces the restored index holds under the prefix (`adopted N`), so a dump
+  that lost `pinecone.partitions` still re-registers every tenant before you reconcile.
+- Reconcile walks the family `<namespace>:*` and resumes at its cursor; run `backup_readiness` for
+  the whole-family counts and heed its >2,000-namespace warning before trusting a single backup.
+
 ## Who can run these
 
 Every function on this page — including `detach_storage`/`attach_storage` below — runs as the
