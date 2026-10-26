@@ -124,6 +124,8 @@ mod tests {
         NextTimeout {
             after: Duration::from_secs(secs),
             reason: Timeout::Global,
+            per_read: None,
+            per_write: None,
         }
     }
 
@@ -157,6 +159,8 @@ mod tests {
         let timeout = NextTimeout {
             after: Duration::from_millis(50),
             reason: Timeout::Global,
+            per_read: None,
+            per_write: None,
         };
 
         let err = transport.await_input(timeout).expect_err("timeout");
