@@ -40,18 +40,15 @@ to switch between them.
 **Requirements:** PostgreSQL 17 or 18, superuser access, and [pgvector][pgvector] installed on the
 server.
 
-To install a prebuilt release, download the archive for your platform and Postgres version from
-the [releases page](https://github.com/pinecone-io/pg_pinecone/releases) and copy its files into
-your Postgres installation, as step 1 of the [quickstart][quickstart] shows. Or build from source
-with [pgrx](https://github.com/pgcentralfoundation/pgrx):
+Install it one of two ways:
 
-```bash
-git clone https://github.com/pinecone-io/pg_pinecone.git
-cd pg_pinecone/pg_pinecone
-cargo install cargo-pgrx --version 0.19.2 --locked
-cargo pgrx init --pg17 "$(which pg_config)"   # use --pg18 for PostgreSQL 18
-cargo pgrx install --release
-```
+- **Prebuilt release**: download the archive for your platform and Postgres version from the
+  [releases page](https://github.com/pinecone-io/pg_pinecone/releases) and copy its files into your
+  Postgres installation, as step 1 of the [quickstart][quickstart] shows.
+- **Docker**: [`pineconeteam/pg_pinecone`](https://hub.docker.com/r/pineconeteam/pg_pinecone) is the
+  [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector) image with `pg_pinecone` added,
+  one tag per Postgres major: `docker run -d -e POSTGRES_PASSWORD=secret pineconeteam/pg_pinecone:0.10.1-pg17`
+  (add `-c shared_preload_libraries=pg_pinecone` for the `remote` engine).
 
 Then create the extensions and index a vector column:
 
@@ -70,6 +67,24 @@ SELECT id FROM items ORDER BY embedding <=> '[1,2,4]' LIMIT 2;
 
 For a full walkthrough on a sample table, including semantic search with embeddings, see the
 [quickstart in the pg_pinecone docs][quickstart].
+
+## Build from source
+
+pg_pinecone is built with [pgrx](https://github.com/pgcentralfoundation/pgrx). You need a Rust
+toolchain and the headers of the Postgres you're building for (`pg_config` on your `PATH`, or
+pass its path to `--pg-config`).
+
+```bash
+git clone https://github.com/pinecone-io/pg_pinecone.git
+cd pg_pinecone/pg_pinecone
+cargo install cargo-pgrx --version 0.19.2 --locked
+cargo pgrx init --pg17 "$(which pg_config)"   # use --pg18 for PostgreSQL 18
+cargo pgrx install --release                  # builds and installs into that Postgres
+```
+
+`cargo pgrx install` writes the extension into the Postgres `pg_config` points at; then
+`CREATE EXTENSION vector; CREATE EXTENSION pg_pinecone;` as above. On x86_64 the build targets your
+own CPU, so it runs anywhere you build it. For running the tests, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
