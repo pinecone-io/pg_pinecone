@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
@@ -133,7 +133,7 @@ jobs:
       # On the dry-run PR trigger there's no RELEASE_TAG ref to check out —
       # an empty `ref` falls back to actions/checkout's default (the PR's
       # merge commit), same as omitting the input entirely.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
           persist-credentials: false
