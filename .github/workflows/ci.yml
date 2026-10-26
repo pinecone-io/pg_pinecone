@@ -28,7 +28,7 @@ jobs:
 
       - name: Cache cargo-audit
         id: cargo-audit-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-0.22.2-${{ runner.os }}
@@ -86,7 +86,7 @@ jobs:
 
       - name: Cache cargo-pgrx
         id: cargo-pgrx-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-pgrx
           key: cargo-pgrx-0.19.2-${{ runner.os }}
@@ -162,7 +162,7 @@ jobs:
       - name: Cache cargo-pgrx
         if: env.UPGRADE_BASES != ''
         id: cargo-pgrx-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-pgrx
           key: cargo-pgrx-0.19.2-${{ runner.os }}
@@ -177,7 +177,7 @@ jobs:
 
       - name: Cache release tarballs
         if: env.UPGRADE_BASES != ''
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /tmp/pg_pinecone-upgrade-base
           key: upgrade-base-${{ env.UPGRADE_BASES }}-pg${{ matrix.pg }}-${{ runner.os }}
