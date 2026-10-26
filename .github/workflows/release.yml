@@ -246,6 +246,9 @@ jobs:
   # digest; docker-manifest then assembles the version tags from the digests.
   docker:
     if: github.event_name != 'pull_request'
+    # Gate on the version check and every build leg: never push to Hub when the
+    # GitHub release is blocked or a package leg failed.
+    needs: [create-release, package]
     strategy:
       fail-fast: false
       matrix:
@@ -312,9 +315,13 @@ jobs:
         working-directory: /tmp/digests
         run: |
           version="${RELEASE_TAG#v}"
-          tags=(-t "${IMAGE}:${version}-pg${{ matrix.pg }}" -t "${IMAGE}:pg${{ matrix.pg }}")
-          # latest tracks the newest Postgres major.
-          [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
+          tags=(-t "${IMAGE}:${version}-pg${{ matrix.pg }}")
+          # Move pgNN/latest only on a tag push — a dispatch rebuild of an older
+          # tag must not retarget them and downgrade default pulls.
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tags+=(-t "${IMAGE}:pg${{ matrix.pg }}")
+            [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
+          fi
           docker buildx imagetools create "${tags[@]}" \
             $(for d in *; do echo "${IMAGE}@sha256:$d"; done)
           docker buildx imagetools inspect "${IMAGE}:${version}-pg${{ matrix.pg }}"
