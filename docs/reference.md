@@ -1245,8 +1245,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
   none and never matches). Every other qual runs after the index returns a batch, so a selective
   one grows `topK` (capped by `pinecone.am_max_topk`) or ends the scan early — see
   [Iterative scan](#iterative-scan). A **native-engine** index pushes the same one equality column,
-  compared per record inside the list scan (no bitmap); see the
-  [filtered-search benchmarks](https://docs.pinecone.io/guides/pg-pinecone/benchmarks#filtered-search).
+  compared per record inside the list scan (no bitmap).
 - **Remote filter keys: limits.** Pinecone compares numbers as f64, so a key of 2^53 or more is
   rechecked against the heap. A text key counts against Pinecone's 40 KB of metadata per vector;
   a larger value fails its upsert and parks the queue. Renaming the key column needs a `REINDEX`;
