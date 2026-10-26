@@ -47,7 +47,7 @@ Install it one of two ways:
   Postgres installation, as step 1 of the [quickstart][quickstart] shows.
 - **Docker**: [`pineconeteam/pg_pinecone`](https://hub.docker.com/r/pineconeteam/pg_pinecone) is the
   [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector) image with `pg_pinecone` added,
-  one tag per Postgres major: `docker run -d -e POSTGRES_PASSWORD=secret pineconeteam/pg_pinecone:0.10.1-pg17`
+  one tag per Postgres major: `docker run -d -e POSTGRES_PASSWORD=secret pineconeteam/pg_pinecone:0.11.0-pg17`
   (add `-c shared_preload_libraries=pg_pinecone` for the `remote` engine).
 
 Then create the extensions and index a vector column:
