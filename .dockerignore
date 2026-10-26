@@ -1,0 +1,9 @@
+.git
+target
+**/target
+.context
+bench
+docs/images
+*.env
+.env
+**/*.env
