@@ -40,7 +40,7 @@ to switch between them.
 **Requirements:** PostgreSQL 17 or 18, superuser access, and [pgvector][pgvector] installed on the
 server.
 
-Install it one of four ways:
+Install it one of three ways:
 
 - **Prebuilt release**: download the archive for your platform and Postgres version from the
   [releases page](https://github.com/pinecone-io/pg_pinecone/releases) and copy its files into your
@@ -50,15 +50,6 @@ Install it one of four ways:
   one tag per Postgres major: `docker run -d -e POSTGRES_PASSWORD=secret pinecone/pg_pinecone:0.10.1-pg17`
   (add `-c shared_preload_libraries=pg_pinecone` for the `remote` engine).
 - **pgxman**: `pgxman install pg_pinecone`.
-- **From source** with [pgrx](https://github.com/pgcentralfoundation/pgrx):
-
-```bash
-git clone https://github.com/pinecone-io/pg_pinecone.git
-cd pg_pinecone/pg_pinecone
-cargo install cargo-pgrx --version 0.19.2 --locked
-cargo pgrx init --pg17 "$(which pg_config)"   # use --pg18 for PostgreSQL 18
-cargo pgrx install --release
-```
 
 Then create the extensions and index a vector column:
 
