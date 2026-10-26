@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-10-26
 
 - **`native` is the default engine of `pinecone.create_index`** (it was `pgvector`). The gate the README tied the
   default to is met: on the 1M x 768-d box (AWS `r6id.4xlarge`, 2026-10-19, one client, PostgreSQL 17), native takes
@@ -10,7 +10,7 @@
   says `engine => 'pgvector'`. Create the index after the bulk load: below `small_n_threshold` (10,000 rows) a native
   index is flat, an exact scan, until `REINDEX`.
 - **`set_engine(tbl, 'native')` moves an hnsw index `create_index` built to native** (it refused: "not supported
-  yet"). To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')`. It builds
+  yet"). To move an index created before 0.11.0 to native: `SELECT pinecone.set_engine('docs', 'native')`. It builds
   the native index while reads keep the hnsw one, drops the hnsw index and gives its name to the native one; the table
   then leaves `status()` and `topk`, like any native table. A table `track` or `promote` also registered is refused;
   `pgvector -> remote` goes through `native`.
@@ -22,7 +22,7 @@
   still ranked by inner product: at 1,000 rows scanned, recall@10 on that set goes from 0.17 to 0.92. No format
   change, but `REINDEX` an inner-product native index built before: it keeps its skewed lists, and a row inserted
   after the upgrade is placed by L2 against its old centroids, which queries may probe late.
-- **First in-place upgrade, 0.10.0 to 0.10.1** (`pg_pinecone--0.10.0--0.10.1.sql`): the script replaces
+- **First in-place upgrade, 0.10.0 to 0.11.0** (`pg_pinecone--0.10.0--0.11.0.sql`): the script replaces
   `pinecone.create_index` (the new default) and `pinecone._on_sql_drop` (the fix above), and deletes the rows 0.10.0
   kept for hnsw indexes dropped under it. Indexes already built stay as they are (an hnsw index made under 0.10.0
   too). Install, restart, then `ALTER EXTENSION pg_pinecone UPDATE`

@@ -536,7 +536,7 @@ any single HTTP attempt, no longer orphans the remote index — the queued oblig
 once reachable. A permanent-class refusal (e.g. `deletion_protection`) parks the row after
 `pinecone.outbox_max_attempts` with a warning naming the index for manual deletion.
 
-**From `pgvector` (`pgvector -> native`)**: to move an index created before 0.10.1 to native,
+**From `pgvector` (`pgvector -> native`)**: to move an index created before 0.11.0 to native,
 `SELECT pinecone.set_engine('docs', 'native')`. One transaction: it builds the native index (same
 metric), drops the HNSW index, gives its name to the native one and deletes the registry row. Writes
 wait for the build, as for any `CREATE INDEX`; reads keep the HNSW index until the drop at the end,
@@ -722,8 +722,8 @@ A changed function default lives in the catalog, so it takes effect at step 3, n
 default `engine` of `pinecone.create_index` (`pgvector` in 0.10.0, `native` after): until the update runs, a call without
 `engine` still builds `pgvector`. Indexes already built are never touched.
 
-To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')` after the update
-([engine lifecycle](#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index)). The 0.10.1 update
+To move an index created before 0.11.0 to native: `SELECT pinecone.set_engine('docs', 'native')` after the update
+([engine lifecycle](#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index)). The 0.11.0 update
 also deletes the registry rows 0.10.0 kept for HNSW indexes dropped under it, which made `create_index` refuse their tables.
 
 **A native index of an older on-disk format is offline from the restart until `REINDEX`.** A release that changes the format says so in its changelog (0.10.0 writes format 3; under `pg_pinecone` nothing older exists, so this first applies at the next format change): a native index built before it cannot be read by the new library. Per entry point: the planner stops choosing it (one WARNING per backend, naming the index); a scan that is forced, and every `INSERT` into its table, fail with `pg_pinecone index '...' has format version 1 (this build reads 3): REINDEX it` (SQLSTATE 55000); `VACUUM` skips it with a WARNING and completes; `pinecone.index_format()` says `readable = false` and never raises. `ALTER EXTENSION pg_pinecone UPDATE` prints a WARNING listing these indexes. Rebuild them right after the update:

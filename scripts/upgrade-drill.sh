@@ -773,7 +773,7 @@ DFLT_AMS_BEFORE="$(index_ams fx.t_dflt)"
 pass "the base's create_index defaults to '$BASE_DEFAULT_ENGINE': the index on fx.t_dflt is $DFLT_AMS_BEFORE"
 GONE_ROW_BEFORE="$(scalar "SELECT count(*) FROM pinecone.tables WHERE relid = 'fx.t_gone'::regclass")"
 GONE_ROW_EXPECTED=0
-! version_lt "$BASE_VERSION" 0.10.1 || GONE_ROW_EXPECTED=1
+! version_lt "$BASE_VERSION" 0.11.0 || GONE_ROW_EXPECTED=1
 [ "$GONE_ROW_BEFORE" = "$GONE_ROW_EXPECTED" ] \
     || fail "DROP INDEX of an hnsw index create_index built under $BASE_VERSION left $GONE_ROW_BEFORE registry rows, not $GONE_ROW_EXPECTED"
 pass "DROP INDEX of an hnsw index create_index built under $BASE_VERSION left $GONE_ROW_BEFORE registry row (fx.t_gone)"
