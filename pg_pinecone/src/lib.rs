@@ -30770,7 +30770,7 @@ mod tests {
         );
     }
 
-    /// The way off the pre-0.10.1 default: `set_engine(.., 'native')` on a `create_index(engine =>
+    /// The way off the pre-0.11.0 default: `set_engine(.., 'native')` on a `create_index(engine =>
     /// 'pgvector')` table builds the native index (same metric) under the hnsw index's name, drops the
     /// hnsw index and its registry row, and the planner uses the native one. On the table or the index.
     #[pg_test]

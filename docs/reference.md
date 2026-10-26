@@ -48,7 +48,7 @@ A scan rotates the query once, quantises it to 4 bits per coordinate once per pr
 - A vector with a NaN or infinite component (pgvector stores none) is refused at build and at insert with an error (the build names the heap tuple). A finite one whose square overflows single precision (components near 1e20) is stored: its estimate is NaN, which ranks it last in the pool.
 - A native index built before 0.10 holds the old sketch and is offline until `REINDEX`: [`pinecone.reindex_native_indexes()`](#index-format-version).
 - **Minimum code width.** A column of fewer than 256 dimensions is zero-padded to 256 and gets a 256-bit code: 150 records to a list page. The estimator's error shrinks with the square root of the code width whatever the data's dimension, and the rotation spreads the padding over all 256 bits, so a short column ranks like a 256-d one. On a 64-bit code a pool of 300 over every list read recall@10 0.919 on a synthetic 64-d mixture (20,000 rows, 50 weakly separated blobs) and 0.870 on 24-d uniform data behind a 1-in-333 residual `WHERE`; with 256 bits it reads 1.000 and 0.925. Format 3 is unreleased, so the wider code needed no format bump.
-- **Inner-product lists are partitioned by L2.** Inner product isn't a distance, so assigning rows by it lets the largest-norm centroid take most of the table on data with a common offset. An inner-product index clusters and assigns rows by L2 and ranks lists by inner product at query time. `REINDEX` an inner-product index built before 0.10.1: it keeps its skewed lists, and rows inserted after the upgrade are placed by L2 against its old centroids, which queries may probe late.
+- **Inner-product lists are partitioned by L2.** Inner product isn't a distance, so assigning rows by it lets the largest-norm centroid take most of the table on data with a common offset. An inner-product index clusters and assigns rows by L2 and ranks lists by inner product at query time. `REINDEX` an inner-product index built before 0.11.0: it keeps its skewed lists, and rows inserted after the upgrade are placed by L2 against its old centroids, which queries may probe late.
 
 ### Native engine: blocked scan and error-bound early stop
 
@@ -459,7 +459,7 @@ plain `USING hnsw` index, `'remote'` a `USING pinecone WITH (mode = 'remote')` o
 `'pgvector'`: `ALTER EXTENSION pg_pinecone UPDATE` changes it and leaves built indexes alone, so a caller that wants
 HNSW says `engine => 'pgvector'`.
 
-To move an index created before 0.10.1 to native: `SELECT pinecone.set_engine('docs', 'native')` (it builds the native
+To move an index created before 0.11.0 to native: `SELECT pinecone.set_engine('docs', 'native')` (it builds the native
 index, then drops the HNSW one: [runbook](runbook.md#engine-lifecycle-pineconecreate_index--set_engine--promote_index--demote_index)).
 `DROP INDEX` of an HNSW index `create_index` built forgets its registry row; 0.10.0 kept it, and the update deletes those
 rows.
