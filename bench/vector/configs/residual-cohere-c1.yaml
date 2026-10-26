@@ -1,0 +1,70 @@
+# Residual C1 on the Cohere wikipedia-22-12 1M file (cosine): pushed 1% correlated key plus a residual
+# uncorrelated WHERE (0.3% / 1%), the 0.10.0 grid. Dataset from `scripts/download-datasets.sh cohere`.
+name: residual_cohere_c1
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: cohere_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: cosine
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.003, mode: uncorrelated}}
+    - {selectivity: 0.01, mode: correlated, residual: {selectivity: 0.01, mode: uncorrelated}}
+
+systems:
+  - name: pgvector_hnsw
+    type: hnsw
+    skip_unfiltered: true
+    explain_probe: true
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [40]
+    iterative_scan_values: ["off", "relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [100000]
+
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, mode_l_threshold: 0.005, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 10, 50]
+    iterative_scan_values: ["auto", "off", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+    scan_fraction_values: [0.0]
+
+  - name: exact_seqscan
+    type: exact
+    skip_unfiltered: true
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false

@@ -16,6 +16,10 @@ Write-ups:
   (how to rerun: `configs/README-residual.md`).
 - `REPORT-halfvec.md`: pgvector FP16 (halfvec) against FP32 hnsw and pg_pinecone native from `main` (0.10.0), 1M x 768d, one AWS box,
   2026-10-16 (`configs/halfvec_1m.yaml`; box facts `box/BOX-2026-10-16-halfvec.md`).
+- `REPORT-halfvec-filtered.md`: the same arms under 1% and 10% filters on the 0.10.0 release, 2026-10-22 (`configs/halfvec_filtered_1m_0.10.yaml`;
+  box facts `box/BOX-2026-10-22-hvfilt.md`).
+- `REPORT-overram.md`: FP32 / FP16 hnsw and native under a 4 GB memory cap, 2026-10-23 (`configs/overram_1m.yaml`; box facts
+  `box/BOX-2026-10-22-overram.md`).
 
 **Last verified:** 2026-10-14 on an AWS `r6id.4xlarge` (PostgreSQL 17.11 PGDG, pgvector 0.8.7, the pg_pinecone 0.9.0 release tarball, Python 3.12.3):
 `local_1m`, `residual-c1`, `residual-c2`, `residual-ext` (its mode-L system re-run as `residual-ext-model`), `remote_1m`, `remote_filtered`,
@@ -76,11 +80,13 @@ timing runs use a release Postgres built from source (add pgvector with `../../s
 ```
 scripts/download-datasets.sh sift       # SIFT1M: 168 MB download -> sift1m.npz 521 MB
 scripts/download-datasets.sh wikidpr    # wiki_dpr: 5.3 GB download (4 shards) -> wikidpr_768d_1m.npz 3.4 GB
+scripts/download-datasets.sh cohere     # Cohere wikipedia-22-12 1M, cosine: 2.9 GB HDF5 -> cohere_768d_1m.npz (needs h5py)
 ```
 
-Both land in `$PG_PINECONE_BENCH_DATA/vector/datasets_cache`. The synthetic datasets (everything named smoke, sweep, spotcheck, full)
+All land in `$PG_PINECONE_BENCH_DATA/vector/datasets_cache`. The synthetic datasets (everything named smoke, sweep, spotcheck, full)
 are generated on first use; nothing to download. SIFT1M is only read by configs whose `sift1m:` block is enabled; wiki_dpr
 only by the `kind: real` configs (baselines_exact_real*, wikidpr_1m_pg_pinecone, followup_c1_wikidpr, residual-*, except residual-smoke).
+The Cohere 1M file is the one Tiger Data publishes on `s3://vector-datasets`; `download-datasets.sh cohere10m` converts its 10M sibling the same way.
 
 ## Run
 
@@ -113,6 +119,9 @@ OS-assigned; see `harness/util.free_port`). Pass an absolute path (the socket di
 | `local_1m_0.10`, `residual-c1-0.10`, `residual-c2-0.10`, `residual-ext-0.10`, `remote_filtered_keep` | wiki_dpr 1M x 768d | the 0.10.0 versions of the configs above: the native grid is `scan_fraction` x `rescore_multiplier` with the calibrated default as its first point, `iterative_scan` `auto` (the new default) beside `off` and `relaxed_order`, `remote_filtered_keep` is `remote_filtered` without deleting the 1M index | 0.10.0 release run on the box |
 | `smoke-halfvec-native` | 50k x 768d synthetic | rehearsal of `halfvec_1m`: every arm kind in its order (FP32 hnsw, 5x rerank, the four `target_recall` native builds and the 0.95 grid, exact FP32, FP16 heap, exact FP16), k = 10 and 100, 1 / 4 clients; needs pg_pinecone from main | 80 s (verified 2026-10-16) |
 | `halfvec_1m` | wiki_dpr 1M x 768d | FP32 hnsw; FP16 expression hnsw with and without 2x / 5x / 10x FP32 rerank; FP16 heap hnsw; m16 and m32 builds; `pg_pinecone_native` from main at `target_recall` 0.90 / 0.95 / 0.98 / 0.99 (calibrated defaults, plus a probe x pool grid on 0.95); exact FP32 and FP16 scans; k = 10 and 100, 1 / 4 / 16 clients | 95 min on the box (2026-10-16, `REPORT-halfvec.md`) |
+| `smoke-halfvec-filtered`, `halfvec_filtered_1m_0.10` | 50k x 768d synthetic / wiki_dpr 1M x 768d | halfvec expression hnsw next to FP32 hnsw and native under the 1% and 10% correlated key with iterative scan; the smoke rehearses it (PostgreSQL 18 and the 0.10.0 pg18 tarball on the box) | box run 2026-10-22 (`REPORT-halfvec-filtered.md`) |
+| `smoke-overram`, `overram_1m` | 50k synthetic / wiki_dpr 1M x 768d | FP32 hnsw, FP16 hnsw and native on an external Postgres under a cgroup memory cap (`box/overram-pg.sh`), uncapped and 4 GB | box run 2026-10-23 (`REPORT-overram.md`) |
+| `residual-cohere-c1`, `residual-cohere-c2` | Cohere wikipedia-22-12 1M x 768d, cosine | the residual-filter cells of `residual-c1/c2` on Cohere: pushed 1% / 10% key plus a 0.3% / 1% residual, hnsw and native against the exact scan | box run 2026-10-24 |
 | `remote-smoke`, `remote-smoke-lanes` | 5k x 768d synthetic | rehearsals of the Pinecone lanes against a real index: AM with a filter key and residuals, direct REST, a partitioned AM index, the trigger lane | 3 to 5 min, about 15 to 30k write units each |
 | `remote_1m`, `remote_filtered`, `remote_partition`, `remote_lanes_am_100k`, `remote_lanes_topk_100k` | wiki_dpr 1M / 500k / 100k x 768d | the Pinecone-backed leg (staged: `--stage build`, then `--stage measure`); real money, see below | hours (backfill) plus about 1 h of queries |
 | `baselines_exact`, `baselines_exact_real`, `baselines_exact_real_r50` | synthetic / wiki_dpr | forced-seqscan exact baselines (recall asserted == 1.0) | hours |
@@ -544,11 +553,11 @@ bench/vector/
   pg/tuned.conf             appended to postgresql.conf after initdb (tuned.linux-aws.conf / tuned.linux-gcp.conf: the AWS and GCP boxes)
   harness/                  the package (pgctl, datasets, sift, groundtruth, loader, systems, workloads, remote, churn,
                             metrics, runner, report, config, util)
-  scripts/                  download-datasets.sh, convert_wikidpr.py
+  scripts/                  download-datasets.sh, convert_wikidpr.py, convert_cohere.py
   box/                      the AWS boxes: provision.sh, upload.sh, teardown.sh, conn.sh, step.sh, user-data.sh, install-pg_pinecone.sh,
-                            install-pg18.sh, setup-box.sh, phase.sh, settings.py, pc_indexes.py, tables_halfvec.py, README.md,
-                            BOX-2026-10-16-halfvec.md
-  overram/                  docker-compose.yml + tuned conf + RUNBOOK.md (design only)
+                            install-pg18.sh, setup-box.sh, phase.sh, settings.py, pc_indexes.py, overram-pg.sh, tables_halfvec.py, README.md,
+                            BOX-2026-10-16-halfvec.md, BOX-2026-10-22-hvfilt.md, BOX-2026-10-22-overram.md and their settings-*.json
+  overram/                  docker-compose.yml + tuned conf + RUNBOOK.md (the Docker design)
   kernels/                  standalone microbench crate, no dependencies: `cargo run --release` times the Hamming and 1-bit-code
                             kernels (x86_64); `cargo run --release --bin distance` the engine's exact f32 distance kernels (any architecture)
   cleanup.sh                stops leftover scratch Postgres instances

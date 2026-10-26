@@ -3,6 +3,7 @@
 # phases: tools data prep smoke smoke_default smoke_tuned local_1m c1 c2 ext ext_model
 #         remote_1m_build remote_1m remote_filtered lane_am_build lane_am lane_topk_build lane_topk partition_build partition cleanup
 #         pg18_install   (PostgreSQL 18 and the pg18 tarball next to the 17 of user-data.sh)
+#         data_cohere residual_cohere_c1_prep residual_cohere_c1 residual_cohere_c2_prep residual_cohere_c2   (residual cells on Cohere 1M, cosine; PostgreSQL 18 after pg18_install, no Pinecone)
 #         hv_install hv_prep hv_smoke hv_1m   (the halfvec session: pg_pinecone built from main, no Pinecone, no key file)
 #         hvf_prep hvf_smoke hvf_1m   (filtered halfvec: PostgreSQL 18 and the 0.10.0 pg18 tarball after pg18_install, no Pinecone)
 #         overram_prep overram_smoke overram_1m   (search under a memory cap: box/overram-pg.sh, PostgreSQL 17, no Pinecone)
@@ -51,6 +52,14 @@ phase() {
         partition) run part remote_partition --stage measure ;;
         cleanup) "$PY" box/pc_indexes.py delete-all --yes ;;
         pg18_install) "$V/box/install-pg18.sh" ;;
+        data_cohere)
+            PY=$PY "$V/scripts/download-datasets.sh" cohere
+            (cd "$PG_PINECONE_BENCH_DATA/vector/datasets_cache" && sha256sum cohere/cohere-wikipedia-22-12-1M-angular.hdf5 cohere_768d_1m.npz > "$STATE/data-cohere-sha256.txt")
+            ;;
+        residual_cohere_c1_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/residual-cohere-c1.yaml --prep-only -v ;;
+        residual_cohere_c1) run18 rc1cohere residual-cohere-c1 ;;
+        residual_cohere_c2_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/residual-cohere-c2.yaml --prep-only -v ;;
+        residual_cohere_c2) run18 rc2cohere residual-cohere-c2 ;;
         hv_install)
             # pg_pinecone from main (~/pg_pinecone-src and its COMMIT, uploaded as box/README.md "Halfvec session" says) over the release
             # tarball: the workspace's cargo-pgrx pin under its own --root, x86-64-v3 as the release build; commit and sha256 to $STATE

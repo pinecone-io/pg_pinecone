@@ -5,7 +5,7 @@ built or run by CI: `.github/workflows/ci.yml` formats and lints the Rust crates
 
 | dir | measures |
 |---|---|
-| [`vector/`](vector/README.md) | Filtered and unfiltered ANN search: pgvector hnsw / ivfflat / halfvec against pg_pinecone's native local engine and the remote engine; residual `WHERE` filters and the iterative scan, on synthetic data, SIFT1M and wiki_dpr 768d |
+| [`vector/`](vector/README.md) | Filtered and unfiltered ANN search: pgvector hnsw / ivfflat / halfvec against pg_pinecone's native local engine and the remote engine; residual `WHERE` filters and the iterative scan, on synthetic data, SIFT1M, wiki_dpr 768d and Cohere wikipedia-22-12 768d |
 
 ## Common setup
 
@@ -34,6 +34,8 @@ Results land in `vector/results/` (one JSON and one markdown file per run), giti
 
 - `vector/REPORT-residual-filter.md`: iterative scan vs pgvector, 1M x 768d, 2026-10-07.
 - `vector/REPORT-halfvec.md`: pgvector halfvec vs FP32 hnsw and native, 1M x 768d, 2026-10-16.
+- `vector/REPORT-halfvec-filtered.md`: the same on 1% and 10% filters, 0.10.0, 2026-10-22.
+- `vector/REPORT-overram.md`: search under a memory cap, 2026-10-22.
 
 ## Not reproducible from this tree
 

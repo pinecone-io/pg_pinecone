@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import gc
 import json
 import logging
 import os
@@ -51,6 +52,24 @@ def _write_checkpoint(run_name: str, started_tag: str, payload: dict) -> None:
         json.dump(sanitize_for_json(dict(payload, partial=True)), f, indent=2,
                   default=str, allow_nan=False)
     tmp.replace(path)
+
+
+def _keep_base_vectors(cfg: dict, systems) -> bool:
+    """True when a later stage still reads the in-process corpus.
+
+    After COPY the heap is the source of truth for search. Holding the numpy
+    copy next to Postgres is what OOM-killed the 10M Cohere run on a 128 GB
+    box (python 31 GB + shared_buffers 32 GB + parallel CREATE INDEX). Drop it
+    unless churn, a remote lane, or a mid-run heap reload (mixed storage_type)
+    still needs the array.
+    """
+    if cfg.get("churn", {}).get("enabled"):
+        return True
+    if any(s.kind in remote_mod.REMOTE_KINDS for s in systems):
+        return True
+    if len({s.storage_type for s in systems}) > 1:
+        return True
+    return False
 
 
 def _machine_info() -> dict:
@@ -429,11 +448,11 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
         _check_halfvec_ef_search(system, system.k_values or cfg.get("k_values") or [k], k,
                                  filtered=bool(filter_specs))
     n_centers = cfg["dataset"]["n_centers"]
-    n_rows = dataset.vectors.shape[0]
+    n_rows, dim = dataset.vectors.shape
     min_throughput_seconds = cfg["min_throughput_seconds"]
 
-    log.info("dataset %s: n=%d dim=%d", dataset.key, dataset.vectors.shape[0], dataset.vectors.shape[1])
-    geometry = ds_mod.geometry_diagnostics(dataset.centers, dataset.cluster_sigmas, dataset.vectors.shape[1])
+    log.info("dataset %s: n=%d dim=%d", dataset.key, n_rows, dim)
+    geometry = ds_mod.geometry_diagnostics(dataset.centers, dataset.cluster_sigmas, dim)
     impurity = ds_mod.cluster_impurity(dataset.vectors, dataset.cluster_ids, dataset.centers)
     log.info("geometry: inter-center=%.1f intra-radius=%.1f ratio=%.3f cluster_impurity=%.4f",
               geometry["mean_inter_center_dist"], geometry["mean_intra_cluster_radius"],
@@ -594,7 +613,13 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
                                             n_centers=n_centers, tenant_ids=tenant_ids,
                                             storage_type=first_storage,
                                             column_storage=fp32_storage if first_storage == "vector" else None)
-            log.info("loaded %d rows: %.1fs", dataset.vectors.shape[0], load_t["seconds"])
+            log.info("loaded %d rows: %.1fs", n_rows, load_t["seconds"])
+
+        if not _keep_base_vectors(cfg, systems):
+            dataset.vectors = np.empty((0, dim), dtype=np.float32)
+            gc.collect()
+            log.info("released base vectors after load (was %d x %d); heap is the source of truth",
+                     n_rows, dim)
 
         # Delayed import to avoid a cycle at module load time.
         from . import workloads as wl_mod
@@ -638,7 +663,7 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
             # build_index drops every OTHER index on the table first:
             # at no point do two systems' indexes coexist.
             build = wl_mod.build_index(
-                pg, table, COLUMN, metric, system, dataset.vectors.shape[0],
+                pg, table, COLUMN, metric, system, n_rows,
                 remote=dict(dataset=dataset, reuse=reuse, tenant_ids=tenant_ids) if is_remote else None)
             if uses_halfvec or fp32_storage is not None:
                 with pg.connect() as conn:
@@ -906,7 +931,7 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
                 dropped = wl_mod.drop_all_secondary_indexes(conn, table)
             log.info("  churn index isolation: dropped %s, building %s fresh", dropped, churn_system.name)
             churn_build = wl_mod.build_index(pg, table, COLUMN, metric, churn_system,
-                                              dataset.vectors.shape[0])
+                                              n_rows)
             if churn_system.kind == "pg_pinecone_native":
                 # REINDEX-shaped protocol, not `run_churn`'s in-place live-index
                 # churn -- local mode's aminsert is a hard-stub ERROR, so churn's
@@ -980,7 +1005,7 @@ def run(cfg: dict, data_dir: str | None = None, prep_only: bool = False) -> dict
                     pg_server_version=pg_server_version,
                     pg_debug_assertions=pg_debug_assertions),
         config=cfg,
-        dataset=dict(key=dataset.key, n=int(dataset.vectors.shape[0]), dim=int(dataset.vectors.shape[1]),
+        dataset=dict(key=dataset.key, n=int(n_rows), dim=int(dim),
                       meta=dataset.meta, geometry=geometry, cluster_impurity=impurity),
         filters_realized_selectivity=filtered_realized, hardness_check=hardness_check,
         systems=system_results, churn=churn_results, sift1m=sift_results,

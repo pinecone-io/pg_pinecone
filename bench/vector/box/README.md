@@ -49,6 +49,16 @@ The kernel microbench (Hamming over the native sketches, 1-bit code x 4-bit quer
 cd bench/vector/kernels && cargo run --release -- --cpu 3
 ```
 
+## Cohere residual cells
+
+`residual-cohere-c1.yaml` and `residual-cohere-c2.yaml` on the box recipe above (Cohere wikipedia-22-12 1M, cosine), PostgreSQL 18 (copy the pg18 tarball as in the filtered halfvec session below), no Pinecone, no key file. `data_cohere` downloads the HDF5 and converts it (needs `h5py`, in `requirements.txt`).
+
+```
+$S cohere $P pg18_install data_cohere residual_cohere_c1_prep residual_cohere_c1 residual_cohere_c2_prep residual_cohere_c2
+```
+
+(`S=$B/vector/box/step.sh`, `P=$B/vector/box/phase.sh`.) Teardown as below.
+
 ## Halfvec session
 
 `configs/halfvec_1m.yaml` (pgvector FP16 arms against FP32 hnsw and native) on the box recipe above, no Pinecone, no key file. Its native arms measure **pg_pinecone built from main** on the box, not the release tarball: the tarball is still uploaded and installed only because `upload.sh` and `setup-box.sh` expect one, and `hv_install` replaces it. The pg_pinecone commit is the `origin/main` uploaded below, stamped at run time in `/data/state/pg_pinecone-build.txt` (commit and library sha256); the run itself stamps `pg_pinecone_extversion` 0.10.0. Copy both into the session's facts file, and run `settings.py <label>` and copy `/data/state`, `/data/logs` and `/data/raw` off the box (check them) before `teardown.sh`: the 2026-10-16 session lost its state and logs (`BOX-2026-10-16-halfvec.md`, Gaps). Results: `../REPORT-halfvec.md`.

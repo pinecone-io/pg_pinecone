@@ -5,9 +5,15 @@
 #   scripts/download-datasets.sh wikidpr   wiki_dpr (DPR), 768d: 4 shards, 5.3 GB download -> wikidpr_768d_1m.npz, 3.4 GB (1M base
 #                                          + held-out queries). Needs ~9 GB free and ~12 GB RAM while converting. For baselines_exact_real*,
 #                                          wikidpr_1m_pg_pinecone, followup_c1_wikidpr and residual-{c1,c2,ext,ext2}.
+#   scripts/download-datasets.sh cohere    Cohere wikipedia-22-12 1M (angular), 768d, as published by Tiger Data: 2.9 GB HDF5
+#                                          (s3://vector-datasets/1M/..., public GetObject) -> cohere_768d_1m.npz.
+#                                          Needs h5py. For residual-cohere-c1 and -c2.
+#   scripts/download-datasets.sh cohere10m Cohere 10M: 28.6 GB HDF5 -> cohere_768d_10m.npz. Put CACHE on
+#                                          NVMe at this scale (root EBS is 100 GB). Needs ~70 GB RAM to convert.
 #   scripts/download-datasets.sh all
 # The synthetic datasets (smoke*, residual-smoke, sweep_*, spotcheck_*, full*) are generated on first use: nothing to download.
-# Files already present are kept; interrupted downloads resume. Shards stay in wikidpr_shards/ (rm -r to reclaim 5.3 GB).
+# Files already present are kept; interrupted downloads resume. Shards stay in wikidpr_shards/ (rm -r to reclaim 5.3 GB);
+# the Cohere HDF5 stays in cohere/ (rm -r to reclaim 2.9 GB after the npz exists).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)          # bench/vector
 DATA=${PG_PINECONE_BENCH_DATA:-$HERE/../.data}
@@ -15,6 +21,11 @@ CACHE=$DATA/vector/datasets_cache
 PY=${PY:-$HERE/.venv/bin/python}
 WIKI=https://dl.fbaipublicfiles.com/dpr/data/wiki_encoded/single/nq
 WIKI_BYTES=(1324693633 1324804738 1325065657 1325225044)       # wiki_passages_0..3, as served 2026-10-12
+# Public Cohere files (HeadObject 2026-10-24 / 25).
+COHERE_URL=https://vector-datasets.s3.amazonaws.com/1M/cohere-wikipedia-22-12-1M-angular.hdf5
+COHERE_BYTES=3118728192
+COHERE10_URL=https://vector-datasets.s3.amazonaws.com/10M/cohere-wikipedia-22-12-10M-angular.hdf5
+COHERE10_BYTES=30743368192
 mkdir -p "$CACHE"
 
 sift() {
@@ -44,9 +55,43 @@ wikidpr() {
   "$PY" "$HERE/scripts/convert_wikidpr.py" --shards "$CACHE/wikidpr_shards" --out "$CACHE/wikidpr_768d_1m.npz"
 }
 
+cohere() {
+  if [ -f "$CACHE/cohere_768d_1m.npz" ]; then echo "cohere_768d_1m.npz present, skipping"; return; fi
+  "$PY" -c "import h5py" 2>/dev/null || { echo "need h5py: $PY -m pip install h5py"; exit 1; }
+  mkdir -p "$CACHE/cohere"
+  f=$CACHE/cohere/cohere-wikipedia-22-12-1M-angular.hdf5
+  have=$( [ -f "$f" ] && wc -c < "$f" | tr -d ' ' || echo 0 )
+  if [ "$have" != "$COHERE_BYTES" ]; then
+    echo "Cohere 1M HDF5: $((COHERE_BYTES / 1000000)) MB from vector-datasets (unsigned GetObject)"
+    curl -fL --retry 3 -C - -o "$f" "$COHERE_URL"
+  fi
+  have=$(wc -c < "$f" | tr -d ' ')
+  [ "$have" = "$COHERE_BYTES" ] || { echo "cohere hdf5: $have bytes, expected $COHERE_BYTES"; exit 1; }
+  echo "converting HDF5 to cohere_768d_1m.npz"
+  "$PY" "$HERE/scripts/convert_cohere.py" --scale 1m --hdf5 "$f" --out "$CACHE/cohere_768d_1m.npz"
+}
+
+cohere10m() {
+  if [ -f "$CACHE/cohere_768d_10m.npz" ]; then echo "cohere_768d_10m.npz present, skipping"; return; fi
+  "$PY" -c "import h5py" 2>/dev/null || { echo "need h5py: $PY -m pip install h5py"; exit 1; }
+  mkdir -p "$CACHE/cohere"
+  f=$CACHE/cohere/cohere-wikipedia-22-12-10M-angular.hdf5
+  have=$( [ -f "$f" ] && wc -c < "$f" | tr -d ' ' || echo 0 )
+  if [ "$have" != "$COHERE10_BYTES" ]; then
+    echo "Cohere 10M HDF5: $((COHERE10_BYTES / 1000000)) MB from vector-datasets (unsigned GetObject)"
+    curl -fL --retry 3 -C - -o "$f" "$COHERE10_URL"
+  fi
+  have=$(wc -c < "$f" | tr -d ' ')
+  [ "$have" = "$COHERE10_BYTES" ] || { echo "cohere 10m hdf5: $have bytes, expected $COHERE10_BYTES"; exit 1; }
+  echo "converting HDF5 to cohere_768d_10m.npz"
+  "$PY" "$HERE/scripts/convert_cohere.py" --scale 10m --hdf5 "$f" --out "$CACHE/cohere_768d_10m.npz"
+}
+
 case "${1:-}" in
   sift) sift ;;
   wikidpr) wikidpr ;;
-  all) sift; wikidpr ;;
-  *) sed -n "2,10p" "$0"; exit 2 ;;
+  cohere) cohere ;;
+  cohere10m) cohere10m ;;
+  all) sift; wikidpr; cohere ;;
+  *) sed -n "2,13p" "$0"; exit 2 ;;
 esac
