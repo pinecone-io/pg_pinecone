@@ -186,7 +186,7 @@ jobs:
 
       # Also on the dry-run PR trigger: exercises the hand-off to `upload`.
       - name: Keep the tarball for the upload job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pg_pinecone-pg${{ matrix.pg }}-${{ matrix.os }}-${{ matrix.arch }}
           path: |
