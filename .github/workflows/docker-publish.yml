@@ -1,20 +1,44 @@
-name: Docker backfill 0.11.0
+name: Docker publish
 
-# One-off: v0.11.0 predates the Dockerfile, so publish its images from main
-# (the extension crate is unchanged since that tag). Dispatch on this branch,
-# then delete the branch.
+# Manual image publish from the checked-out tree, for versions whose tag
+# predates the Dockerfile (backfill) or to rebuild an image. The release
+# workflow publishes images automatically for new tags; this is the escape hatch.
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to tag the images (e.g. 0.11.0) — must match the crate version in this tree'
+        required: true
+      move_latest:
+        description: 'Also move pgNN and latest to these images (only for the newest release)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
   IMAGE: pineconeteam/pg_pinecone
-  VERSION: 0.11.0
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Version matches the crate
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          crate=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
+          if [ "$VERSION" != "$crate" ]; then
+            echo "Requested $VERSION but this tree is crate version $crate" >&2
+            exit 1
+          fi
+
   docker:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -76,9 +100,15 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Create and push manifest tags
         working-directory: /tmp/digests
+        env:
+          VERSION: ${{ inputs.version }}
+          MOVE_LATEST: ${{ inputs.move_latest }}
         run: |
-          tags=(-t "${IMAGE}:${VERSION}-pg${{ matrix.pg }}" -t "${IMAGE}:pg${{ matrix.pg }}")
-          [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
+          tags=(-t "${IMAGE}:${VERSION}-pg${{ matrix.pg }}")
+          if [ "$MOVE_LATEST" = true ]; then
+            tags+=(-t "${IMAGE}:pg${{ matrix.pg }}")
+            [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
+          fi
           docker buildx imagetools create "${tags[@]}" \
             $(for d in *; do echo "${IMAGE}@sha256:$d"; done)
           docker buildx imagetools inspect "${IMAGE}:${VERSION}-pg${{ matrix.pg }}"
