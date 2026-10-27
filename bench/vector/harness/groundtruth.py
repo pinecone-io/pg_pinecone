@@ -33,13 +33,47 @@ CACHE_DIR = util.datasets_cache_dir() / "groundtruth"
 # every purpose this benchmark measures.
 TIE_EPS_REL = 1e-4
 
+# Above this, ||v||^2 is reduced a chunk at a time. 1M x 768 fp32 is 3.0 GiB and
+# stays on the one-shot sum (the reduction the cached 1M ground truth was built with).
+_FULL_SQUARE_MAX = 8 * 1024**3
+
+
+def _squared_row_norms(vectors: np.ndarray) -> np.ndarray:
+    """Per-row ||v||^2 without materializing `vectors ** 2`.
+
+    Each chunk uses the same `np.sum(... ** 2, axis=1)` as the one-shot path.
+    """
+    probe = np.sum(np.ascontiguousarray(vectors[:1]) ** 2, axis=1)
+    out = np.empty(vectors.shape[0], dtype=probe.dtype)
+    step = 100_000
+    for s in range(0, vectors.shape[0], step):
+        block = vectors[s:s + step]
+        out[s:s + step] = np.sum(block ** 2, axis=1)
+    return out
+
+
+def _query_batch_for(n_vectors: int, requested: int, cap_bytes: int = 2 * 1024**3) -> int:
+    """Keep one distance matrix under `cap_bytes`.
+
+    Count 8 bytes a column: NumPy 1 promotes `2.0 * float32` to float64. NumPy 2
+    keeps float32, and a smaller batch still fits. 1M rows at the default
+    requested batch of 200 stays 200 (the cap would allow 268).
+    """
+    row_bytes = n_vectors * 8
+    if row_bytes <= 0:
+        return requested
+    return max(1, min(requested, cap_bytes // row_bytes))
+
 
 def _distances(queries: np.ndarray, vectors: np.ndarray, metric: str) -> np.ndarray:
     """Return (n_queries, n_vectors) matrix where LOWER is closer, regardless of metric."""
     if metric == "l2":
         # ||q - v||^2 = ||q||^2 + ||v||^2 - 2 q.v ; monotonic in true L2 distance.
         q2 = np.sum(queries ** 2, axis=1, keepdims=True)
-        v2 = np.sum(vectors ** 2, axis=1, keepdims=True).T
+        if vectors.nbytes > _FULL_SQUARE_MAX:
+            v2 = _squared_row_norms(vectors)[None, :]
+        else:
+            v2 = np.sum(vectors ** 2, axis=1, keepdims=True).T
         return q2 + v2 - 2.0 * (queries @ vectors.T)
     elif metric == "cosine":
         qn = queries / np.linalg.norm(queries, axis=1, keepdims=True)
@@ -74,6 +108,7 @@ def brute_force_topk(queries: np.ndarray, vectors: np.ndarray, k: int, metric: s
             d = np.load(path)
             return d["ids"], d["dists"]
 
+    query_batch = _query_batch_for(int(vectors.shape[0]), query_batch)
     n_q = queries.shape[0]
     k_eff = min(k, vectors.shape[0])
     out_ids = np.full((n_q, k), -1, dtype=np.int64)

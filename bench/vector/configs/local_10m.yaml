@@ -1,0 +1,111 @@
+# wiki_dpr 10M x 768d, unfiltered and filtered (1% and 10% correlated keys), pg_pinecone native
+# against pgvector hnsw, plus a 50-query exact scan. No ivfflat, no k = 100, no 0.9.0 replay.
+# Queries are the 500 held-out passages (out_region). No in-region set.
+#
+# pinecone.mode_l_threshold is left unset, so the engine default 0.03 stands. A 1% key (about
+# 100,000 rows) is mode L, an exact scan of the matching rows: one sweep point, the recall grid
+# does not apply. A 10% key is mode H. Its rescore sweep is the 1M pushed-key grid (0, 2, 4) at
+# the filtered ramp (scan_fraction unset). pinecone.max_scan_tuples is the table-scaled auto
+# budget, max(100000, 0.1 * n), not the 1M runs' fixed 20000.
+#
+# One native index carries one filter column, so the 1% and 10% keys are their own builds.
+# The unfiltered native index does not answer them (recorded not applicable). HNSW is one index:
+# the unfiltered ef_search sweep, and both filters at iterative_scan relaxed_order with that
+# same auto budget. Build order is unfiltered native, 1%, 10%, HNSW, exact, so the native
+# checkpoints exist if the HNSW build is killed.
+#
+# Dataset: scripts/download-datasets.sh wikidpr10m. Shards wiki_passages_0..24 in corpus order, the
+# first 10,000,000 rows as the base (the first 1,000,000 must match the 1M artifact, base sha
+# dd93ee85811b7494). Vectors live in wikidpr_768d_10m.vectors.npy and are memory-mapped.
+# n_lists defaults to ceil(sqrt(10_000_000)) = 3163. The unfiltered scan_fraction values are the
+# 1M ones, so they probe about 25, 37, 50, 78, 116, 157, 236 and 316 lists here. 0.0 is the
+# calibrated default.
+#
+# Run on the 128 GB box (r6id.4xlarge), not a 48 GB laptop. The float32 matrix is 31 GB.
+# shared_buffers is 16 GB: the 32 GB box default plus a resident copy of that matrix is what
+# OOM-killed the 10M Cohere build. The sidecar is mapped, not pinned, and 16 GB leaves the HNSW
+# graph room to allocate. phase.sh data_wikidpr10m, then local_10m_prep, then local_10m.
+name: local_10m
+seed: 42
+k: 10
+k_values: [10]
+warmup_queries: 10
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+
+postgres:
+  shared_buffers: 16GB
+  maintenance_work_mem: 8GB
+  min_wal_size: 2GB
+  max_wal_size: 16GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_10m.npz
+  n: 10000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  query_modes: [out_region]
+  run:
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  - name: pg_pinecone_native
+    type: pg_pinecone_native
+    k_values: [10]
+    record_scan_stats: true
+    build_params: {seed: 42}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 3, 10]
+    scan_fraction_values: [0.0, 0.0076, 0.0116, 0.0156, 0.0246, 0.0366, 0.0496, 0.0746, 0.0996]
+
+  - name: pg_pinecone_native_1pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+
+  - name: pg_pinecone_native_10pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0, 2, 4]
+    filtered_iterative_scan_values: ["auto", "relaxed_order"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  - name: pgvector_hnsw
+    type: hnsw
+    build_params: {m: 16, ef_construction: 64}
+    sweep_param: ef_search
+    sweep_values: [10, 20, 40, 80, 160, 320]
+    filtered_iterative_scan_values: ["relaxed_order"]
+    scan_budget_param: hnsw.max_scan_tuples
+    filtered_scan_budget_values: [auto]
+
+  - name: exact_seqscan
+    type: exact
+    k_values: [10]
+    max_queries: 50
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 4]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false
