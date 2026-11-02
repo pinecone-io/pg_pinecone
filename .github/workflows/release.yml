@@ -4,31 +4,34 @@ name: Release
 # Builds a packaged pg_pinecone extension per OS/arch and Postgres major (17, 18),
 # smoke-tests each tarball on its Postgres, and attaches the tarballs to the
 # GitHub release. workflow_dispatch re-runs the build against an existing tag; it refuses to replace
-# tarballs already attached to that release unless `overwrite` is set (a re-run of a tag push's own
-# run replaces its earlier upload).
+# assets already attached to that release unless `overwrite` is set (a re-run of a tag push's own
+# run replaces its earlier upload). postgresapp-sign also attaches
+# pg_pinecone-pg18-<version>.pkg; a notarization failure does not block the tarball upload.
 #
-# Dry run: a PR touching this file (or the smoke script) also runs the full
-# six-leg build matrix (same jobs, same matrix) but skips create-release/upload
+# Dry run: a PR touching this file, the smoke script, or packaging/postgresapp
+# also runs the full six-leg build matrix (same jobs, same matrix) and the unsigned
+# Postgres.app build, but skips create-release/upload/postgresapp-sign
 # — it never touches a real release. This exists because v0.5.0 shipped a
 # release.yml change (per-arch RUSTFLAGS) that broke both arm64 legs, and the
 # matrix only ever builds at tag time, so nothing caught it pre-tag. Now editing
 # this file proves every platform x Postgres leg still builds before the edit merges.
 #
 # The build runs PR-controlled code (build scripts, proc-macros, the smoke script), so it gets
-# a read-only token that is not persisted in .git/config. Only create-release and upload hold
-# `contents: write`; neither runs on a PR.
+# a read-only token that is not persisted in .git/config. Only create-release, upload, and
+# postgresapp-sign hold `contents: write`. None of them run on a PR. postgresapp-sign does run
+# packaging scripts, but only on a tag or a dispatch.
 on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['.github/workflows/release.yml', 'scripts/release-smoke.sh', 'Dockerfile', '.dockerignore']
+    paths: ['.github/workflows/release.yml', 'scripts/release-smoke.sh', 'Dockerfile', '.dockerignore', 'packaging/postgresapp/**']
   workflow_dispatch:
     inputs:
       tag:
         description: 'Existing tag to build and attach (e.g. v0.2.1)'
         required: true
       overwrite:
-        description: 'Replace tarballs already attached to the release (default: refuse)'
+        description: 'Replace assets already attached to the release (default: refuse)'
         type: boolean
         default: false
 
@@ -77,7 +80,7 @@ jobs:
             attached=$(gh release view "$RELEASE_TAG" --json assets \
               --jq '[.assets[].name | select(startswith("pg_pinecone-"))] | join(", ")')
             if [ -n "$attached" ]; then
-              echo "::error::Release $RELEASE_TAG already has tarballs attached ($attached). Dispatch again with overwrite: true to replace them."
+              echo "::error::Release $RELEASE_TAG already has assets attached ($attached). Dispatch again with overwrite: true to replace them."
               exit 1
             fi
           fi
@@ -225,6 +228,150 @@ jobs:
           fi
           gh release upload "$RELEASE_TAG" dist/* "${flags[@]}"
 
+  # Unsigned Postgres.app build. Runs on a PR dry run too. No signing secrets:
+  # the signed package is a separate job so a pull request cannot read them.
+  postgresapp:
+    name: package (postgres.app pg18 arm64)
+    needs: create-release
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pg18-postgresapp
+
+      # The pg18-only disk image, not the combined 14-through-18 image, which
+      # also ends in -18.dmg.
+      - name: Install Postgres.app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ASSET=$(gh release view --repo PostgresApp/PostgresApp --json assets \
+            --jq '[.assets[].name | select(test("^Postgres-[0-9.]+-18\\.dmg$"))][0]')
+          if [ -z "$ASSET" ] || [ "$ASSET" = "null" ]; then
+            echo "no PostgreSQL 18 Postgres.app disk image on the latest release" >&2
+            exit 1
+          fi
+          echo "Downloading $ASSET"
+          gh release download --repo PostgresApp/PostgresApp --pattern "$ASSET" --output postgres.dmg
+          MOUNT=$(hdiutil attach -nobrowse -noverify -noautoopen postgres.dmg | tail -1 | awk '{print $3}')
+          if [ ! -d "$MOUNT/Postgres.app" ]; then
+            echo "Postgres.app not found at $MOUNT" >&2
+            exit 1
+          fi
+          cp -R "$MOUNT/Postgres.app" /Applications/Postgres.app
+          hdiutil detach "$MOUNT"
+          /Applications/Postgres.app/Contents/Versions/18/bin/pg_config --version
+
+      - name: Install cargo-pgrx
+        run: cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
+
+      - name: Build unsigned install root
+        id: build
+        run: |
+          set -euo pipefail
+          SIGN=0 packaging/postgresapp/build.zsh
+          root=$(cat target/postgresapp-install-root.txt)
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke against Postgres.app
+        run: packaging/postgresapp/smoke.sh "${{ steps.build.outputs.root }}"
+
+      # upload-artifact zips files as mode 644. A tar keeps the build's modes
+      # for the sign job's pkgbuild.
+      - name: Tar install root
+        run: COPYFILE_DISABLE=1 tar -C "${{ steps.build.outputs.root }}" -czf postgresapp-install-root.tar.gz .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: postgresapp-pg18-arm64
+          path: postgresapp-install-root.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Sign and notarize on a Mac. Does not gate `upload`: tarballs still publish
+  # if Apple notarization fails. Re-run the failed job to retry; that does not
+  # pass through create-release again.
+  postgresapp-sign:
+    name: sign (postgres.app pg18 arm64)
+    needs: [create-release, postgresapp]
+    # A bare `if` drops the default success() check, so name the upstream results.
+    # Otherwise a failed unsigned build would still try to sign.
+    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.postgresapp.result == 'success'
+    runs-on: macos-14
+    environment: postgresapp-signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: postgresapp-pg18-arm64
+          path: postgresapp-artifact
+
+      - name: Untar install root
+        run: |
+          set -euo pipefail
+          mkdir -p install-root
+          COPYFILE_DISABLE=1 tar -xzf postgresapp-artifact/postgresapp-install-root.tar.gz -C install-root
+
+      # Secrets live on the postgresapp-signing environment (v* tags and the
+      # default branch). Certs and the API key are base64. A pull-request ref
+      # matches neither rule, so PR code cannot read them.
+      - name: Import Apple Developer ID certificates
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$APPLE_DEVELOPER_ID_APPLICATION_CERT" | base64 --decode > "$RUNNER_TEMP/application.p12"
+          echo "$APPLE_DEVELOPER_ID_INSTALLER_CERT" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/application.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/installer.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/application.p12" "$RUNNER_TEMP/installer.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Sign, package, and notarize
+        env:
+          SIGN: "1"
+          INSTALL_ROOT: ${{ github.workspace }}/install-root
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: packaging/postgresapp/build.zsh
+
+      - name: Upload package to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERWRITE: ${{ inputs.overwrite }}
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
+          pkg="target/pg_pinecone-pg18-${version}.pkg"
+          flags=()
+          if [ "$GITHUB_EVENT_NAME" = push ] || [ "$OVERWRITE" = true ]; then
+            flags+=(--clobber)
+          fi
+          # bash 3.2 on macOS: an empty array is unbound under set -u.
+          gh release upload "$RELEASE_TAG" "$pkg" ${flags[@]+"${flags[@]}"}
+
   # Build the Docker image from source (no push) so a PR editing the Dockerfile
   # or this workflow proves it still builds before merge. One representative leg.
   docker-dry-run:
@@ -322,6 +469,9 @@ jobs:
             tags+=(-t "${IMAGE}:pg${{ matrix.pg }}")
             [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
           fi
-          docker buildx imagetools create "${tags[@]}" \
-            $(for d in *; do echo "${IMAGE}@sha256:$d"; done)
+          digests=()
+          for d in *; do
+            digests+=("${IMAGE}@sha256:$d")
+          done
+          docker buildx imagetools create "${tags[@]}" "${digests[@]}"
           docker buildx imagetools inspect "${IMAGE}:${version}-pg${{ matrix.pg }}"

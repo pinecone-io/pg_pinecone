@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>@EXTENSION_NAME@ for Postgres.app</title>
+  <welcome file="welcome.html"/>
+  <license file="license.txt"/>
+  <conclusion file="conclusion.html"/>
+    <pkg-ref id="com.postgresapp.extension.@PG_MAJOR_VERSION@.@EXTENSION_NAME@"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <domains enable_currentUserHome="true"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.postgresapp.extension.@PG_MAJOR_VERSION@.@EXTENSION_NAME@"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.postgresapp.extension.@PG_MAJOR_VERSION@.@EXTENSION_NAME@" visible="false">
+        <pkg-ref id="com.postgresapp.extension.@PG_MAJOR_VERSION@.@EXTENSION_NAME@"/>
+    </choice>
+    <pkg-ref id="com.postgresapp.extension.@PG_MAJOR_VERSION@.@EXTENSION_NAME@" version="0" onConclusion="none">@EXTENSION_NAME@-@PG_MAJOR_VERSION@.pkg</pkg-ref>
+</installer-gui-script>
