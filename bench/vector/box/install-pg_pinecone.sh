@@ -7,6 +7,7 @@ ASSET=pg_pinecone-$VERSION-pg$PG_MAJOR-linux-x86_64.tar.gz
 case "$VERSION/$PG_MAJOR" in
     0.10.0/17) SHA256=52167cc7a2883fc14d480ce2f4a2564b87780f63efebf7b3d2c72f72bc8a5ec2 ;;
     0.10.0/18) SHA256=6c7589f7f34f0c0819e767187ed875e796cdb8e77d10e7bdc343a2966ecdcb09 ;;
+    0.11.0/17) SHA256=2d0834297085303f66de3bdc3f41c2e5f68d9a60c35e0ad18bc84f717bf6bf86 ;;
     *) echo "no checksum for pg_pinecone $VERSION on PostgreSQL $PG_MAJOR (17 or 18)" >&2; exit 1 ;;
 esac
 REPO=${PG_PINECONE_REPO:-pinecone-io/pg_pinecone}

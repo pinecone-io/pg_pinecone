@@ -7,6 +7,7 @@
 #         hv_install hv_prep hv_smoke hv_1m   (the halfvec session: pg_pinecone built from main, no Pinecone, no key file)
 #         hvf_prep hvf_smoke hvf_1m   (filtered halfvec: PostgreSQL 18 and the 0.10.0 pg18 tarball after pg18_install, no Pinecone)
 #         overram_prep overram_smoke overram_1m   (search under a memory cap: box/overram-pg.sh, PostgreSQL 17, no Pinecone)
+#         data_wikidpr10m local_10m_prep local_10m   (wiki_dpr 10M unfiltered and 1%/10% filtered: configs/local_10m.yaml)
 #         settings   (settings-<label>.json of the run; BOX_LABEL required)
 # local_1m, c1, c2 and ext run the configs/*-0.10.yaml variants; remote_filtered keeps its index (remote_filtered_keep.yaml).
 # No key sits in any environment: remote legs read it from the file $EE_ENV. Finished phases leave $STATE/done-<phase>.
@@ -90,6 +91,12 @@ phase() {
             done
             "$V/box/overram-pg.sh" stop
             ;;
+        data_wikidpr10m)
+            PY=$PY "$V/scripts/download-datasets.sh" wikidpr10m
+            (cd "$PG_PINECONE_BENCH_DATA/vector/datasets_cache" && sha256sum wikidpr_768d_10m.vectors.npy wikidpr_768d_10m.npz > "$STATE/data-wikidpr10m-sha256.txt")
+            ;;
+        local_10m_prep) env -u PINECONE_API_KEY "$PY" run.py --config configs/local_10m.yaml --prep-only -v ;;
+        local_10m) run local10m local_10m ;;
         settings) "$PY" "$V/box/settings.py" "${BOX_LABEL:?set BOX_LABEL}" ;;
         *) echo "unknown phase $1" >&2; return 2 ;;
     esac

@@ -178,8 +178,11 @@ def sample_region_queries(dataset: Dataset, allowed_cluster_ids: np.ndarray, n: 
 # A "real" dataset is a converted artifact in datasets_cache/ (npz with fp32
 # arrays: vectors, queries, warmup_pool, query_bank, plus meta_json
 # provenance) and a k-means clustering computed here (cached alongside) that
-# plays the role the GMM generative cluster ids play for synthetic data:
-# filter columns derive from cluster membership exactly as before (correlated
+# plays the role the GMM generative cluster ids play for synthetic data.
+# A 10M wiki_dpr npz omits `vectors` and stores them in a sibling
+# `<stem>.vectors.npy`, which is memory-mapped so the 31 GB matrix is not
+# pinned next to Postgres (that pairing OOM-killed the 10M Cohere run).
+# Filter columns derive from cluster membership exactly as before (correlated
 # = whole clusters until target selectivity via correlated_chosen_clusters;
 # uncorrelated = random), and in-region ("tenant") queries are sampled from
 # the held-out query_bank restricted to qualifying clusters -- real vectors,
@@ -234,7 +237,14 @@ def real_dataset(artifact: str, n: int, dim: int, n_centers: int, n_queries: int
     import json as _json
     meta_src = _json.loads(str(d["meta_json"]))
 
-    vectors = d["vectors"][:n]
+    if "vectors" in d.files:
+        vectors = d["vectors"][:n]
+    else:
+        # 10M wiki_dpr: the base matrix is a sidecar .npy (see convert_wikidpr.py --scale 10m).
+        sidecar = path.parent / f"{path.stem}.vectors.npy"
+        if not sidecar.is_file():
+            raise ValueError(f"artifact {artifact} has no vectors array and {sidecar.name} is not beside it")
+        vectors = np.load(sidecar, mmap_mode="r")[:n]
     if vectors.shape != (n, dim):
         raise ValueError(f"artifact {artifact}: vectors {vectors.shape}, config wants {(n, dim)}")
     if len(d["queries"]) < n_queries:
