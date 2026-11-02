@@ -49,6 +49,10 @@ compile() {
   [[ -x $PG_CONFIG ]] || { echo "Postgres.app pg_config not found at $PG_CONFIG" >&2; exit 1; }
   sdk=$(xcrun --show-sdk-path)
   [[ -n $sdk ]] || { echo "xcrun --show-sdk-path returned nothing" >&2; exit 1; }
+  # init rewrites $PGRX_HOME/config.toml; keep it off ~/.pgrx so a local run
+  # doesn't repoint `cargo pgrx test pg18` at Postgres.app.
+  export PGRX_HOME=$REPO_ROOT/target/postgresapp-pgrx-home
+  mkdir -p "$PGRX_HOME"
   cargo pgrx init --pg18="$PG_CONFIG"
   (
     cd "$REPO_ROOT/pg_pinecone"

@@ -235,19 +235,34 @@ jobs:
     needs: create-release
     if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     runs-on: macos-14
+    outputs:
+      present: ${{ steps.present.outputs.present }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
           persist-credentials: false
+      # A dispatch for a tag older than this job has no packaging/postgresapp:
+      # skip the build, and the sign job with it, instead of failing the run.
+      - id: present
+        run: |
+          if [ -f packaging/postgresapp/build.zsh ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$RELEASE_TAG has no packaging/postgresapp; skipping the Postgres.app package"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.present.outputs.present == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.present == 'true'
         with:
           key: pg18-postgresapp
 
       # The pg18-only disk image, not the combined 14-through-18 image, which
       # also ends in -18.dmg.
       - name: Install Postgres.app
+        if: steps.present.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -270,9 +285,11 @@ jobs:
           /Applications/Postgres.app/Contents/Versions/18/bin/pg_config --version
 
       - name: Install cargo-pgrx
+        if: steps.present.outputs.present == 'true'
         run: cargo install cargo-pgrx --version "$PGRX_VERSION" --locked
 
       - name: Build unsigned install root
+        if: steps.present.outputs.present == 'true'
         id: build
         run: |
           set -euo pipefail
@@ -281,14 +298,17 @@ jobs:
           echo "root=$root" >> "$GITHUB_OUTPUT"
 
       - name: Smoke against Postgres.app
+        if: steps.present.outputs.present == 'true'
         run: packaging/postgresapp/smoke.sh "${{ steps.build.outputs.root }}"
 
       # upload-artifact zips files as mode 644. A tar keeps the build's modes
       # for the sign job's pkgbuild.
       - name: Tar install root
+        if: steps.present.outputs.present == 'true'
         run: COPYFILE_DISABLE=1 tar -C "${{ steps.build.outputs.root }}" -czf postgresapp-install-root.tar.gz .
 
       - uses: actions/upload-artifact@v7
+        if: steps.present.outputs.present == 'true'
         with:
           name: postgresapp-pg18-arm64
           path: postgresapp-install-root.tar.gz
@@ -303,7 +323,7 @@ jobs:
     needs: [create-release, postgresapp]
     # A bare `if` drops the default success() check, so name the upstream results.
     # Otherwise a failed unsigned build would still try to sign.
-    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.postgresapp.result == 'success'
+    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.postgresapp.result == 'success' && needs.postgresapp.outputs.present == 'true'
     runs-on: macos-14
     environment: postgresapp-signing
     permissions:
