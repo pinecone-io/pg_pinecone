@@ -66,16 +66,10 @@ compile() {
 }
 
 discover_install_root() {
-  local f dylib=""
-  local -a found
-  [[ -d $REPO_ROOT/target/release ]] || { echo "target/release does not exist" >&2; exit 1; }
-  found=("${(@f)$(find "$REPO_ROOT/target/release" -type f -name pg_pinecone.dylib)}")
-  for f in $found; do
-    [[ $f == *pg_pinecone-pg${PG_MAJOR}* ]] || continue
-    dylib=$f
-    break
-  done
-  [[ -n $dylib ]] || { echo "no pg${PG_MAJOR} pg_pinecone.dylib under target/release" >&2; exit 1; }
+  # pgrx nests each build under the pg_config's own pkglibdir, so a pg18 build
+  # against another Postgres can sit next to this one. Take this path exactly.
+  local dylib=$REPO_ROOT/target/release/pg_pinecone-pg${PG_MAJOR}$("$PG_CONFIG" --pkglibdir)/pg_pinecone.dylib
+  [[ -f $dylib ]] || { echo "no pg_pinecone.dylib at $dylib" >&2; exit 1; }
   INSTALL_ROOT=${dylib:h:h:h}
   [[ -f $INSTALL_ROOT/share/postgresql/extension/pg_pinecone.control ]] \
     || { echo "pg_pinecone.control missing under $INSTALL_ROOT" >&2; exit 1; }
