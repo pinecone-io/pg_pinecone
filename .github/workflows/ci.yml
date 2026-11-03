@@ -93,7 +93,7 @@ jobs:
 
       - name: Install cargo-pgrx
         if: steps.cargo-pgrx-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-pgrx --version 0.19.2 --locked
+        run: cargo install cargo-pgrx --version 0.19.2 --locked --force
 
       - name: cargo pgrx init
         run: cargo pgrx init --pg${{ matrix.pg }} "$PG_CONFIG"
@@ -169,7 +169,7 @@ jobs:
 
       - name: Install cargo-pgrx
         if: env.UPGRADE_BASES != '' && steps.cargo-pgrx-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-pgrx --version 0.19.2 --locked
+        run: cargo install cargo-pgrx --version 0.19.2 --locked --force
 
       - name: cargo pgrx init
         if: env.UPGRADE_BASES != ''
