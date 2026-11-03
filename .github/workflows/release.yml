@@ -329,17 +329,43 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Until the environment holds the Apple secrets, skip with a warning
+      # instead of failing every release run.
+      - id: secrets
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          missing=()
+          for name in APPLE_DEVELOPER_ID_APPLICATION_CERT APPLE_DEVELOPER_ID_INSTALLER_CERT APPLE_CERT_PASSWORD \
+                      APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::postgresapp-signing is missing ${missing[*]}; no Postgres.app package for $RELEASE_TAG"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v7
+        if: steps.secrets.outputs.ready == 'true'
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
+        if: steps.secrets.outputs.ready == 'true'
         with:
           name: postgresapp-pg18-arm64
           path: postgresapp-artifact
 
       - name: Untar install root
+        if: steps.secrets.outputs.ready == 'true'
         run: |
           set -euo pipefail
           mkdir -p install-root
@@ -349,6 +375,7 @@ jobs:
       # default branch). Certs and the API key are base64. A pull-request ref
       # matches neither rule, so PR code cannot read them.
       - name: Import Apple Developer ID certificates
+        if: steps.secrets.outputs.ready == 'true'
         env:
           APPLE_DEVELOPER_ID_APPLICATION_CERT: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
           APPLE_DEVELOPER_ID_INSTALLER_CERT: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT }}
@@ -369,6 +396,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
       - name: Sign, package, and notarize
+        if: steps.secrets.outputs.ready == 'true'
         env:
           SIGN: "1"
           INSTALL_ROOT: ${{ github.workspace }}/install-root
@@ -378,6 +406,7 @@ jobs:
         run: packaging/postgresapp/build.zsh
 
       - name: Upload package to the release
+        if: steps.secrets.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           OVERWRITE: ${{ inputs.overwrite }}
