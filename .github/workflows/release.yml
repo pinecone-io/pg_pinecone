@@ -128,7 +128,7 @@ jobs:
           # (Cargo's env-vs-config precedence is all-or-nothing), so it must
           # be repeated here explicitly or the darwin-arm64 link step fails.
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-26
             os: darwin
             arch: arm64
             rustflags: '-Clink-arg=-Wl,-undefined,dynamic_lookup'
@@ -234,7 +234,7 @@ jobs:
     name: package (postgres.app pg18 arm64)
     needs: create-release
     if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
-    runs-on: macos-14
+    runs-on: macos-26
     outputs:
       present: ${{ steps.present.outputs.present }}
     steps:
@@ -322,7 +322,7 @@ jobs:
     name: sign (postgres.app pg18 arm64)
     needs: [create-release, postgresapp]
     if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.postgresapp.result == 'success' && needs.postgresapp.outputs.present == 'true'
-    runs-on: macos-14
+    runs-on: macos-26
     environment: postgresapp-signing
     permissions:
       contents: write
