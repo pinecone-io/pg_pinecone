@@ -321,8 +321,6 @@ jobs:
   postgresapp-sign:
     name: sign (postgres.app pg18 arm64)
     needs: [create-release, postgresapp]
-    # A bare `if` drops the default success() check, so name the upstream results.
-    # Otherwise a failed unsigned build would still try to sign.
     if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.postgresapp.result == 'success' && needs.postgresapp.outputs.present == 'true'
     runs-on: macos-14
     environment: postgresapp-signing
