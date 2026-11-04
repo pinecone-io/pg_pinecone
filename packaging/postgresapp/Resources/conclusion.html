@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Installation Complete</title>
+  <style>
+	body {
+	  font-family: -apple-system;
+	  font-size: 13px;
+	  margin: 20px;
+	  line-height: 1.5;
+	}
+	h1 {
+	  font-size: 18px;
+	  font-weight: 600;
+	  margin-top: 0;
+	}
+	p {
+	  margin-bottom: 1em;
+	}
+	tt {
+		font-family: Menlo, monospace;
+	}
+  </style>
+</head>
+<body>
+  <h1>Restart PostgreSQL before using this version</h1>
+  <p>pg_pinecone @EXTENSION_VERSION@ for PostgreSQL @PG_MAJOR_VERSION@ has been installed.</p>
+  <p>Stop and restart the server before using it. This installer does not edit postgresql.conf.</p>
+  <p>
+	  New install: run <tt>CREATE EXTENSION vector;</tt> then <tt>CREATE EXTENSION pg_pinecone;</tt>.
+	  vector is already included with Postgres.app.
+	  Remote tables and the background worker also need <tt>shared_preload_libraries = 'pg_pinecone'</tt> in postgresql.conf, then another restart.
+  </p>
+  <p>
+	  Upgrade: restart first, then run <tt>ALTER EXTENSION pg_pinecone UPDATE;</tt> in every database that uses the extension.
+	  Updating while the previous library is still loaded fails and rolls back.
+  </p>
+</body>
+</html>

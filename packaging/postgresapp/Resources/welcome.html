@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Welcome</title>
+  <style>
+	  body {
+		font-family: -apple-system;
+		font-size: 13px;
+		margin: 20px;
+		line-height: 1.5;
+	  }
+	  h1 {
+		font-size: 18px;
+		font-weight: 600;
+		margin-top: 0;
+	  }
+	  p {
+		margin-bottom: 1em;
+	  }
+	  tt {
+		font-family: Menlo, monospace;
+	  }
+	</style>
+</head>
+<body>
+  <h1>pg_pinecone @EXTENSION_VERSION@ for PostgreSQL @PG_MAJOR_VERSION@</h1>
+  <p>You are about to install pg_pinecone for Postgres.app on Apple silicon.</p>
+  <p>This installer is compatible with <strong>Postgres.app 2.8.3 or later</strong>.</p>
+  <p>vector is already included with Postgres.app. After installing, restart the server, then run <tt>CREATE EXTENSION vector;</tt> and <tt>CREATE EXTENSION pg_pinecone;</tt>.</p>
+  <p>Remote tables and the background worker need <tt>shared_preload_libraries = 'pg_pinecone'</tt> in postgresql.conf and another restart. This installer does not edit postgresql.conf.</p>
+</body>
+</html>

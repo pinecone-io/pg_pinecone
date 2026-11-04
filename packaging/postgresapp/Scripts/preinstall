@@ -1,0 +1,18 @@
+#!/bin/zsh
+# shellcheck shell=bash
+# Drop the previous copy of this extension. Refuse any other destination:
+# $2 is the install path pkgbuild is about to replace.
+INSTALL_PATH="$2"
+
+if [[ "$INSTALL_PATH" == *"Application Support"/Postgres/Extensions/*/* ]]; then
+  if [[ -d "$INSTALL_PATH" ]]; then
+    echo "Deleting directory: $INSTALL_PATH"
+    rm -rf -- "$INSTALL_PATH" || {
+      echo "Error: Failed to delete $INSTALL_PATH" >&2
+      exit 1
+    }
+  fi
+else
+  echo "Error: Install path does not match expected pattern. Aborting." >&2
+  exit 1
+fi
