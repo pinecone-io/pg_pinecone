@@ -67,14 +67,16 @@ pub(crate) fn invalid(message: impl Into<String>) -> SearchError {
 enum Mode {
     Text,
     QueryString,
+    Embed,
 }
 
 fn parse_mode(mode: &str) -> Result<Mode, SearchError> {
     match mode {
         "text" => Ok(Mode::Text),
         "query_string" => Ok(Mode::QueryString),
+        "embed" => Ok(Mode::Embed),
         other => Err(invalid(format!(
-            "mode must be 'text' or 'query_string', got '{other}'"
+            "mode must be 'text', 'query_string' or 'embed', got '{other}'"
         ))),
     }
 }
@@ -127,6 +129,8 @@ struct Declared {
     text_columns: Vec<String>,
     metadata: BTreeMap<String, MetaKind>,
     vector: Option<(String, i32)>,
+    /// The text column tracked with an `embed` option, if any; the target of `mode => 'embed'`.
+    embed_field: Option<String>,
 }
 
 fn declared_hint(declared: &[String]) -> String {
@@ -148,6 +152,7 @@ struct Args<'a> {
     vector: Option<&'a [f32]>,
 }
 
+#[derive(Debug)]
 struct Body {
     score_by: Value,
     filter: Option<Value>,
@@ -174,12 +179,18 @@ fn plan(declared: &Declared, args: &Args, epoch: EpochSeconds) -> Result<Body, S
 
     let (score_by, requirement) = match (args.vector, query) {
         (Some(values), query) => {
+            if args.mode == Mode::Embed {
+                return Err(invalid(
+                    "mode => 'embed' cannot be combined with vector => — a request has one scoring type",
+                )
+                .hint("drop vector => for hosted-model semantic search, or drop mode => 'embed' to rank by your own query vector"));
+            }
             let column = check_vector(declared, values)?;
             let requirement = query.zip(args.field).map(|(q, f)| match_all(f, q));
             let clause = json!({"type": "dense_vector", "fields": [column], "values": values});
             (clause, requirement)
         }
-        (None, Some(query)) => (scoring_clause(declared, args, query), None),
+        (None, Some(query)) => (scoring_clause(declared, args, query)?, None),
         (None, None) => {
             return Err(invalid(
                 "nothing to rank by — pass query => (text) or vector => (a query vector)",
@@ -216,17 +227,51 @@ fn check_query_arguments(args: &Args) -> Result<(), SearchError> {
     }
 }
 
-fn scoring_clause(declared: &Declared, args: &Args, query: &str) -> Value {
+fn scoring_clause(declared: &Declared, args: &Args, query: &str) -> Result<Value, SearchError> {
     match args.mode {
-        Mode::QueryString => json!({"type": "query_string", "query": query}),
+        Mode::QueryString => Ok(json!({"type": "query_string", "query": query})),
         Mode::Text => {
             let fields = match args.field {
                 Some(field) => vec![field.to_string()],
                 None => declared.text_columns.clone(),
             };
-            json!({"type": "text", "fields": fields, "query": query})
+            Ok(json!({"type": "text", "fields": fields, "query": query}))
+        }
+        Mode::Embed => {
+            let embed_field = declared
+                .embed_field
+                .as_deref()
+                .ok_or_else(|| no_embed_field(declared))?;
+            if let Some(field) = args.field
+                && field != embed_field
+            {
+                return Err(not_embed_field(embed_field, field));
+            }
+            Ok(json!({"type": "embed", "fields": [embed_field], "query": query}))
         }
     }
+}
+
+/// `mode => 'embed'` on a table with no column tracked for hosted embedding (42704); the HINT
+/// shows how to declare one.
+fn no_embed_field(declared: &Declared) -> SearchError {
+    SearchError::new(
+        Code::ERRCODE_UNDEFINED_OBJECT,
+        format!(
+            "{} has no embedding model — mode => 'embed' needs a text column tracked with an embed option",
+            declared.table
+        ),
+    )
+    .hint(r#"track_docs(.., text_columns => '{"<col>": {"embed": {"model": "gemini-embedding-2"}}}')"#)
+}
+
+/// `field =>` named a column other than the one embedding is configured on (42703).
+fn not_embed_field(embed_field: &str, field: &str) -> SearchError {
+    SearchError::new(
+        Code::ERRCODE_UNDEFINED_COLUMN,
+        format!("field \"{field}\" is not the embedding field — mode => 'embed' ranks on \"{embed_field}\""),
+    )
+    .hint(format!("drop field =>, or pass field => '{embed_field}'"))
 }
 
 fn match_all(field: &str, query: &str) -> Value {
@@ -479,6 +524,13 @@ fn check_local<'a>(args: &Args<'a>) -> Result<&'a str, SearchError> {
                 .hint("use mode => 'text', or engine => 'remote'"),
         );
     }
+    if args.mode == Mode::Embed {
+        return Err(unsupported(
+            "mode => 'embed' (semantic search) is not supported on the local engine — it needs the \
+             index's hosted embedding model",
+        )
+        .hint("use engine => 'remote'"));
+    }
     if args.must.is_some() || args.filter.is_some() {
         return Err(unsupported(
             "must/filter are not supported on the local engine in this release",
@@ -551,12 +603,19 @@ fn declared_from(row: &DocRegistryRow, display: String) -> Declared {
             Some((name.clone(), kind))
         })
         .collect();
+    let embed_field = row.text_columns.as_object().and_then(|columns| {
+        columns
+            .iter()
+            .find(|(_, options)| options.get("embed").is_some())
+            .map(|(name, _)| name.clone())
+    });
     Declared {
         table: display,
         index: row.index_name.clone(),
         text_columns,
         metadata,
         vector: row.vector_column.clone().zip(row.vector_dimension),
+        embed_field,
     }
 }
 
@@ -566,7 +625,7 @@ fn explain(err: ClientError, mode: Mode) -> Result<SearchError, ClientError> {
         ClientError::BadRequest { message } => {
             let hint = match mode {
                 Mode::QueryString => QUERY_STRING_HINT,
-                Mode::Text => TEXT_QUERY_HINT,
+                Mode::Text | Mode::Embed => TEXT_QUERY_HINT,
             };
             Ok(invalid(format!("Pinecone rejected the query: {message}")).hint(hint))
         }
@@ -942,6 +1001,7 @@ mod tests {
                 .map(|(name, kind)| (name.to_string(), kind))
                 .collect(),
             vector: Some(("embedding".to_string(), 3)),
+            embed_field: None,
         }
     }
 
@@ -987,7 +1047,7 @@ mod tests {
     }
 
     fn refused(args: &Args, code: Code, parts: &[&str]) -> SearchError {
-        let error = run(args).err().expect("the arguments must be refused");
+        let error = run(args).expect_err("the arguments must be refused");
         assert_eq!(error.code, code, "{error:?}");
         assert!(
             error.message.starts_with("pinecone.search_docs: "),
@@ -1066,6 +1126,110 @@ mod tests {
             ..args()
         };
         assert_eq!(ok(&only_filter).filter, Some(filter));
+    }
+
+    fn declared_embed() -> Declared {
+        Declared {
+            table: "public.kb".to_string(),
+            index: "fts-kb".to_string(),
+            text_columns: vec!["chunk_text".to_string(), "title".to_string()],
+            metadata: [("category".to_string(), MetaKind::Text)]
+                .into_iter()
+                .collect(),
+            vector: None,
+            embed_field: Some("chunk_text".to_string()),
+        }
+    }
+
+    #[test]
+    fn embed_mode_ranks_by_the_embed_field_with_a_text_query() {
+        let declared = declared_embed();
+        let args = Args {
+            query: Some("what is a vector database"),
+            mode: Mode::Embed,
+            ..args()
+        };
+        let body = plan(&declared, &args, &mut epoch).expect("plan");
+        assert_eq!(
+            body.score_by,
+            json!({"type": "embed", "fields": ["chunk_text"], "query": "what is a vector database"})
+        );
+        assert_eq!(body.filter, None);
+    }
+
+    #[test]
+    fn embed_mode_composes_with_a_filter() {
+        let declared = declared_embed();
+        let filter = json!({"category": {"$eq": "ml"}});
+        let args = Args {
+            query: Some("models that understand language"),
+            mode: Mode::Embed,
+            filter: Some(&filter),
+            ..args()
+        };
+        let body = plan(&declared, &args, &mut epoch).expect("plan");
+        assert_eq!(body.score_by["type"], json!("embed"));
+        assert_eq!(body.filter, Some(filter));
+    }
+
+    #[test]
+    fn embed_mode_field_must_name_the_embedding_field() {
+        let declared = declared_embed();
+        let args = Args {
+            mode: Mode::Embed,
+            field: Some("title"),
+            ..args()
+        };
+        let error = plan(&declared, &args, &mut epoch).expect_err("not the embed field");
+        assert_eq!(error.code, Code::ERRCODE_UNDEFINED_COLUMN, "{error:?}");
+        assert!(error.message.contains("embedding field"), "{error:?}");
+    }
+
+    #[test]
+    fn embed_mode_on_a_table_without_an_embedding_model_is_refused() {
+        let args = Args {
+            mode: Mode::Embed,
+            ..args()
+        };
+        let error = refused(
+            &args,
+            Code::ERRCODE_UNDEFINED_OBJECT,
+            &["no embedding model"],
+        );
+        assert!(
+            error.hint.as_deref().unwrap_or_default().contains("embed"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn embed_mode_cannot_be_combined_with_a_query_vector() {
+        let values = [0.5, -0.25, 2.0];
+        let args = Args {
+            mode: Mode::Embed,
+            vector: Some(&values),
+            ..args()
+        };
+        refused(&args, INVALID, &["mode => 'embed'", "vector"]);
+    }
+
+    #[test]
+    fn the_local_engine_refuses_embed_mode() {
+        let args = Args {
+            mode: Mode::Embed,
+            ..args()
+        };
+        let error = check_local(&args).expect_err("local cannot embed");
+        assert_eq!(error.code, Code::ERRCODE_FEATURE_NOT_SUPPORTED, "{error:?}");
+        assert!(error.message.contains("mode => 'embed'"), "{error:?}");
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("engine => 'remote'"),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1329,9 +1493,7 @@ mod tests {
             vector: Some(&values),
             ..self::args()
         };
-        let error = plan(&no_vector, &by_vector, &mut epoch)
-            .err()
-            .expect("refused");
+        let error = plan(&no_vector, &by_vector, &mut epoch).expect_err("refused");
         assert_eq!(error.code, INVALID);
         assert!(
             error
@@ -1355,9 +1517,10 @@ mod tests {
     }
 
     #[test]
-    fn mode_and_engine_accept_two_values_each() {
+    fn mode_and_engine_accept_their_values() {
         assert_eq!(parse_mode("text"), Ok(Mode::Text));
         assert_eq!(parse_mode("query_string"), Ok(Mode::QueryString));
+        assert_eq!(parse_mode("embed"), Ok(Mode::Embed));
         assert_eq!(parse_engine("remote"), Ok(Engine::Remote));
         assert_eq!(parse_engine("local"), Ok(Engine::Local));
         for bad in ["", "Text", "fuzzy"] {

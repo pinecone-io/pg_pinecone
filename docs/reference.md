@@ -803,7 +803,8 @@ key: the stored key (`SELECT ON pinecone.secret`) or a session key.
 
 - **`text_columns`** is `{"<column>": {options}}` or a list of names (defaults). Options: `language`
   (default `en`), `stemming` and `stop_words` (default on; stop words need stemming), `ngram`
-  (`{"min_gram", "max_gram"}`, excludes both), `on_oversize` (`truncate`, the default, or `error`).
+  (`{"min_gram", "max_gram"}`, excludes both), `on_oversize` (`truncate`, the default, or `error`),
+  and `embed` (a hosted model for server-side embedding — see [Hosted embedding](#hosted-embedding-integrated-inference)).
   Columns must be `text`, `varchar` or `char`; names may not start with `_` or `$` or `pg_pinecone_`.
 - **Identity.** The document `_id` is the single-column primary key (or `id_column`, NOT NULL and
   UNIQUE) of type `smallint`, `integer`, `bigint`, `uuid`, `text`, `varchar` or `char`, at most 512
@@ -846,6 +847,46 @@ key: the stored key (`SELECT ON pinecone.secret`) or a session key.
 
 `pinecone.doc_tables` is dumped with the extension; `pinecone.doc_outbox` is not (a queue is not
 data: after a restore the heap is the source of truth).
+
+### Hosted embedding (integrated inference)
+
+Give a text column an `embed` option and Pinecone embeds that column's text with a hosted model —
+on every write and on every query — so a plain `text` column becomes semantically searchable with
+no pgvector column, no `pinecone.embed` call, and no vectors on the wire:
+
+```sql
+SELECT pinecone.track_docs('articles',
+  text_columns => '{"body": {"language": "en", "embed": {"model": "gemini-embedding-2"}}}');
+
+-- rank by meaning (Pinecone embeds the query with the field's model):
+SELECT a.* FROM pinecone.search_docs('articles', 'databases for AI apps', mode => 'embed') s
+  JOIN articles a ON a.id = s.id ORDER BY s.rank;
+```
+
+- **The `embed` object** is forwarded to Pinecone, which resolves and fixes the rest: `model`
+  (required) and optional `dimension`, `metric`, `processing_location`, `write_parameters` /
+  `read_parameters` (e.g. `task_type`). pg_pinecone checks only that `model` is a non-empty string
+  and any `dimension` is in range; Pinecone is authoritative on the model and the plan.
+- **One field serves both.** `embed` composes with `full_text_search` on the same column, so one
+  column answers BM25 (`mode => 'text'`) and semantic (`mode => 'embed'`) search. `embed` uses the
+  index's single dense slot, so it is mutually exclusive with `vector_column` and at most one text
+  column may set it.
+- **Remote only.** Hosted embedding runs at Pinecone, so `search_docs(engine => 'local')` refuses
+  `mode => 'embed'` (`0A000`, pointing at `engine => 'remote'`); local Postgres FTS still serves
+  `mode => 'text'` on the same column.
+- **One scoring type per request.** `mode => 'embed'` composes with `filter` and `must` (a semantic
+  rank narrowed by a metadata or `$match_*` requirement, in one call), but semantic and BM25 scores
+  are on different scales — to rank by both, run two searches and merge by rank.
+- **Models.** The default is `llama-text-embed-v2`. `gemini-embedding-2` (Google; dense; 128–3072
+  dims, default 3072; cosine; chooses a `task_type`) is **not** on the standalone `pinecone.embed`
+  API — it exists only for integrated embedding here — and needs a Builder, Standard or Enterprise
+  Pinecone plan; a plan or permission refusal surfaces Pinecone's own message. See the
+  [tutorial](tutorial-gemini-document-search.md).
+
+The ad-hoc document API takes the same `embed` field directly: `pinecone.create_doc_index(name,
+schema)` with `{"fields": {"chunk_text": {"type": "string", "embed": {"model": "gemini-embedding-2"},
+"full_text_search": {}}}}`, then `pinecone.upsert_docs` with plain text and `pinecone.search_doc_index`
+with a `{"type": "embed", "fields": ["chunk_text"], "query": "..."}` clause.
 
 ### Partition column
 
@@ -1196,12 +1237,16 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 | `public.t: the document lane's SQL failed — ...` / `the table could not render N documents in a row — the SQL that reads its rows is failing, not the documents: ...` (`status().last_error`) | The registry or queue SQL of the table's step raised, or the table could not render 100 rows in a row (or every row of a batch of at least 10). A single row it cannot render is a dead letter (`the row could not be read: ...`), not an error. | Read the message; for a table that fails everywhere check the declared columns and the table's health, then `pinecone.unpark_docs(tbl)`. |
 | `Pinecone refused N documents in a row — the index schema or the declaration has probably drifted: ...` / `... — untrack and re-track the table` (`status().last_error`; the queue parks after `pinecone.outbox_max_attempts` of them) | Pinecone refuses everything the worker sends (the index changed outside pg_pinecone, or an attached index does not match), or a declared column is gone. No dead letters are written; the rows stay queued. | Fix the index or the declaration (`untrack_docs`, then `track_docs`), then `pinecone.unpark_docs(tbl)` if the table stays tracked. |
 | `pinecone.untrack_docs` / `backfill_docs` / `unpark_docs` / `flush_docs` / `failed_docs` / `retry_failed_docs: ... is not tracked by pinecone.track_docs` / `must be owner of ...` | The table has no `doc_tables` row (42704), or the caller does not own a table the verb needs ownership of (42501). | `track_docs` first; run as the owner. |
+| `pinecone.track_docs: column "...": embed needs a non-empty "model" string` / `embed dimension must be ...` / `only one text column may set embed` / `embed and vector_column both use the index's single dense slot` | The `embed` option is malformed or conflicts (22023). | Give `embed` a `"model"`; set it on one text column only; drop `vector_column` for hosted embedding. |
+| `pinecone.track_docs: Pinecone rejected the request: ... not available on the Starter plan` | Creating the hosted-embedding index was refused (403) — e.g. `gemini-embedding-2` needs a Builder+ plan. The server's message is surfaced, not a generic auth error. | Upgrade the Pinecone plan, or choose a model your plan allows. |
 | `pinecone.flush_docs: ... timed out` / `... is parked` (WARNINGs) | The queue did not drain in time, or is parked. | `pinecone.status()`; `failed_docs`; fix the cause. |
 | `pinecone.search_docs: ... is not tracked` | The table has no `doc_tables` row (SQLSTATE 42704). | `pinecone.track_docs(...)` first; `pinecone.search_doc_index(...)` searches an ad-hoc index. |
 | `pinecone.search_docs: ... is still backfilling: N of M rows delivered; results are partial` (NOTICE) | A remote search ran while the first backfill, or a `backfill_docs`, was still sending rows. Once per call; the local engine searches the heap and says nothing. | Wait for `status().docs_queue_state` to be `idle` and `docs_backfill_done = docs_backfill_total`. |
 | `permission denied for table ...` | The caller has no `SELECT` on the table `search_docs`, `flush_docs` or `failed_docs` was asked about (42501, before any HTTP). | Grant `SELECT`. |
 | `pinecone.search_docs: k must be between 0 and 10000` / `mode must be ...` / `engine must be ...` / `<arg> must not be NULL` | An argument is out of range (22023; NULL is 22004). | Fix the argument. |
-| `pinecone.search_docs: nothing to rank by` / `query must not be empty` / `vector => with query => needs field =>` / `mode => 'query_string' cannot be combined with vector =>` | The arguments do not make one scoring clause (22023). | Pass `query` or `vector`; with both, name `field`; drop `query` or use `mode => 'text'`. |
+| `pinecone.search_docs: nothing to rank by` / `query must not be empty` / `vector => with query => needs field =>` / `mode => 'query_string' cannot be combined with vector =>` / `mode => 'embed' cannot be combined with vector =>` | The arguments do not make one scoring clause (22023). | Pass `query` or `vector`; with both, name `field`; drop `query`, or use one scoring type. |
+| `pinecone.search_docs: mode => 'embed' (semantic search) is not supported on the local engine` | `engine => 'local'` with `mode => 'embed'` — Postgres FTS cannot run the hosted model (0A000). | Use `engine => 'remote'`; local still serves `mode => 'text'` on the same column. |
+| `pinecone.search_docs: ... has no embedding model` | `mode => 'embed'` on a table with no column tracked for hosted embedding (42704). | Re-track with an `embed` option, e.g. `text_columns => '{"body": {"embed": {"model": "gemini-embedding-2"}}}'`. |
 | `pinecone.search_docs: ... is partitioned by "...": a search needs one partition` / `has no partition column, so partition => does not apply` / `partition "..." is not a valid ... value` / `partition is of type ...` | `partition` is missing (22023, unless `filter` has an `$eq` on the column) or given for a table without a partition column (22023), does not read as the column's type (22023) or has a type no partition column holds (42804). | Pass `partition => <value>`; omit it on an unpartitioned table. |
 | `pinecone.search_docs: field "..." is not a declared text column` | `field` is not a declared text column (42703); the HINT lists them. | Pick a declared column. |
 | `pinecone.search_docs: must: ...` / `filter: ...` | `must` needs declared text columns with `$match_phrase`/`$match_all`/`$match_any` and string values; `filter` needs declared metadata columns and the `topk` operators (22023). | Follow the message; text columns go in `must`, metadata in `filter`. |

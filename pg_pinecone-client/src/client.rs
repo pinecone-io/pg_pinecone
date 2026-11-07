@@ -988,7 +988,10 @@ impl Client {
             400 | 422 => Err(Error::BadRequest {
                 message: extract_message(&mut resp),
             }),
-            401 | 403 => Err(Error::Auth),
+            401 => Err(Error::Auth),
+            403 => Err(Error::BadRequest {
+                message: extract_message(&mut resp),
+            }),
             409 => Err(Error::Conflict {
                 name: req.name.clone(),
             }),

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Hosted (integrated) embedding on the document API, including Google's `gemini-embedding-2`.**
+  Declare it as a column option — `pinecone.track_docs('docs', text_columns => '{"body": {"embed":
+  {"model": "gemini-embedding-2"}}}')` — and Pinecone embeds that column's text server-side on every
+  write and every query; `pinecone.search_docs('docs', 'query text', mode => 'embed')` then ranks by
+  meaning, with no pgvector column and no `pinecone.embed` call. The same `embed` field works on the
+  ad-hoc document API (`pinecone.create_doc_index` / `upsert_docs` / `search_doc_index` with a
+  `{"type": "embed"}` clause). Hosted embedding is remote-only: `search_docs(engine => 'local')`
+  refuses `mode => 'embed'` (Postgres FTS can't run the model) with a pointer to `engine =>
+  'remote'`. `gemini-embedding-2` is not on the standalone `pinecone.embed` API and needs a Builder
+  (or higher) Pinecone plan; a plan/permission refusal now surfaces Pinecone's own message instead
+  of a generic auth error. Walkthrough: [docs/tutorial-gemini-document-search.md](docs/tutorial-gemini-document-search.md).
+  The model rides in the existing `text_columns` options, so there is no catalog change (the
+  `0.11.0`→`0.12.0` upgrade script is empty).
+
 ## 0.11.0 — 2026-10-26
 
 - **`native` is the default engine of `pinecone.create_index`** (it was `pgvector`). The gate the README tied the

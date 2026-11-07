@@ -720,9 +720,25 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
     for (name, field) in fields {
         check_field_name(name)?;
         match field["type"].as_str() {
-            Some("string") if field.get("full_text_search").is_some() => {
-                text += 1;
-                validate_fts_options(name, &field["full_text_search"])?;
+            // embed/sparse_embed on a `string` claim the one dense/sparse slot, like a *_vector field.
+            Some("string") => {
+                let has_fts = field.get("full_text_search").is_some();
+                let has_embed = field.get("embed").is_some();
+                let has_sparse_embed = field.get("sparse_embed").is_some();
+                if !has_fts && !has_embed && !has_sparse_embed {
+                    return Err(only_search_fields(name));
+                }
+                if has_fts {
+                    text += 1;
+                    validate_fts_options(name, &field["full_text_search"])?;
+                }
+                if has_embed {
+                    dense += 1;
+                    validate_embed(name, &field["embed"])?;
+                }
+                if has_sparse_embed {
+                    sparse += 1;
+                }
             }
             Some("dense_vector") => {
                 dense += 1;
@@ -736,14 +752,7 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
                 }
             }
             Some("sparse_vector") => sparse += 1,
-            _ => {
-                return Err(format!(
-                    "The schema only accepts fields used for search (field types `dense_vector`, \
-                     `sparse_vector`, and `string` with `full_text_search` configuration). To use \
-                     field '{name}' for filtering (field types `boolean`, `float`, `string`, or \
-                     `string_list`), omit it from the schema and include it in documents."
-                ));
-            }
+            _ => return Err(only_search_fields(name)),
         }
     }
     if text > 100 || dense > 1 || sparse > 1 {
@@ -787,6 +796,36 @@ fn validate_fts_options(field: &str, fts: &Value) -> Result<(), String> {
     }
     if flag("stop_words") && !flag("stemming") {
         return Err(format!("field '{field}': stop_words requires stemming"));
+    }
+    Ok(())
+}
+
+fn only_search_fields(name: &str) -> String {
+    format!(
+        "The schema only accepts fields used for search (field types `dense_vector`, \
+         `sparse_vector`, and `string` with `full_text_search`, `embed` or `sparse_embed` \
+         configuration). To use field '{name}' for filtering (field types `boolean`, `float`, \
+         `string`, or `string_list`), omit it from the schema and include it in documents."
+    )
+}
+
+fn validate_embed(field: &str, embed: &Value) -> Result<(), String> {
+    let Some(options) = embed.as_object() else {
+        return Err(format!("field '{field}': embed must be an object"));
+    };
+    if let Some(model) = options.get("model")
+        && !model.as_str().is_some_and(|m| !m.is_empty())
+    {
+        return Err(format!(
+            "field '{field}': embed model must be a non-empty string"
+        ));
+    }
+    if let Some(dimension) = options.get("dimension")
+        && !dimension.as_u64().is_some_and(|d| d > 0)
+    {
+        return Err(format!(
+            "field '{field}': embed dimension must be a positive integer"
+        ));
     }
     Ok(())
 }
@@ -1036,7 +1075,14 @@ fn validate_search(body: &Value) -> Result<(), String> {
     let clauses = body["score_by"].as_array().filter(|c| !c.is_empty());
     let clauses = clauses.ok_or("score_by must be a non-empty array")?;
     let types: BTreeSet<&str> = clauses.iter().filter_map(|c| c["type"].as_str()).collect();
-    let known = ["text", "query_string", "dense_vector", "sparse_vector"];
+    let known = [
+        "text",
+        "query_string",
+        "dense_vector",
+        "sparse_vector",
+        "embed",
+        "sparse_embed",
+    ];
     if types.len() != 1 || !types.iter().all(|t| known.contains(t)) {
         return Err(format!(
             "a request uses exactly one scoring type, got {types:?}"
@@ -1081,6 +1127,12 @@ fn validate_clause(clause: &Value) -> Result<(), String> {
         }
         "dense_vector" if !clause["values"].as_array().is_some_and(|v| !v.is_empty()) => {
             Err("dense_vector: values must be a non-empty array".to_string())
+        }
+        "embed" | "sparse_embed" if query.is_none_or(str::is_empty) => {
+            Err(format!("{kind}: query must be a non-empty string"))
+        }
+        "embed" | "sparse_embed" if !fields.is_some_and(|(n, strings)| n == 1 && strings) => {
+            Err(format!("{kind}: fields must name exactly one field"))
         }
         _ => Ok(()),
     }
