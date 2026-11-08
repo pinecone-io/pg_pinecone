@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-11-08
 
 - **Hosted (integrated) embedding on the document API, including Google's `gemini-embedding-2`.**
   Declare it as a column option — `pinecone.track_docs('docs', text_columns => '{"body": {"embed":
