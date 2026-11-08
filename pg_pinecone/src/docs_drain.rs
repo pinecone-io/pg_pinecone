@@ -42,6 +42,10 @@ pub(crate) const DOC_LOCK_MAGIC: i32 = 0x5056_4443;
 /// Per request: Pinecone allows 1,000 documents and 2 MB; the client budgets 1.5 MB.
 const PACK_MAX_DOCS: usize = 1_000;
 const PACK_MAX_BYTES: usize = 1_500_000;
+/// An index that embeds a field takes one embedding batch per request, and counts the vectors it
+/// derives against the 2 MB; without a declared dimension, the largest a hosted model makes.
+const EMBED_PACK_MAX_DOCS: usize = 96;
+const EMBED_MAX_DIMENSION: u64 = 3072;
 /// Ids planned per read; the rows read together are bounded by [`SLICE_BYTES`].
 const READ_SLICE: usize = 1_000;
 /// What rows read together may weigh (estimated from column sizes before reading), so big rows
@@ -356,15 +360,21 @@ impl Doc {
 
 /// Splits `docs` into requests of at most `max_docs` documents and `max_bytes` bytes; a document
 /// over the byte budget travels alone.
-pub(crate) fn pack(docs: Vec<Doc>, max_docs: usize, max_bytes: usize) -> Vec<Vec<Doc>> {
+pub(crate) fn pack(
+    docs: Vec<Doc>,
+    max_docs: usize,
+    max_bytes: usize,
+    derived_bytes: usize,
+) -> Vec<Vec<Doc>> {
     let mut requests = Vec::new();
     let (mut current, mut bytes) = (Vec::new(), 0usize);
     for doc in docs {
-        if !current.is_empty() && (current.len() >= max_docs || bytes + doc.bytes > max_bytes) {
+        let weight = doc.bytes + derived_bytes;
+        if !current.is_empty() && (current.len() >= max_docs || bytes + weight > max_bytes) {
             requests.push(std::mem::take(&mut current));
             bytes = 0;
         }
-        bytes += doc.bytes;
+        bytes += weight;
         current.push(doc);
     }
     if !current.is_empty() {
@@ -524,18 +534,29 @@ pub(crate) fn upsert_bisecting(
 pub(crate) struct TextField {
     pub(crate) name: String,
     pub(crate) on_oversize: OnOversize,
+    /// Pinecone embeds this column's text, so a document must carry non-blank text for it.
+    pub(crate) embeds: bool,
 }
 
 /// The document for one row: `_id`, every non-NULL text column (cut under `truncate`, which
 /// marks the document with `pg_pinecone_truncated`) and the already typed metadata and vector
 /// fields. `Err` carries the dead-letter message of a value the `error` policy refuses, which
-/// can only have reached the table before the trigger guarded it (or past it).
+/// can only have reached the table before the trigger guarded it (or past it). `None` is a row
+/// with no text to embed: Pinecone refuses it, so it is kept out of the index instead.
 pub(crate) fn build_document(
     id: &str,
     fields: &[TextField],
     texts: &[Option<String>],
     meta: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<Option<Value>, String> {
+    let blank = |text: &Option<String>| text.as_deref().is_none_or(|t| t.trim().is_empty());
+    if fields
+        .iter()
+        .zip(texts)
+        .any(|(field, text)| field.embeds && blank(text))
+    {
+        return Ok(None);
+    }
     let mut doc = Map::new();
     doc.insert("_id".to_string(), Value::String(id.to_string()));
     let mut truncated = false;
@@ -563,7 +584,7 @@ pub(crate) fn build_document(
     if truncated {
         doc.insert(TRUNCATED_FIELD.to_string(), Value::Bool(true));
     }
-    Ok(Value::Object(doc))
+    Ok(Some(Value::Object(doc)))
 }
 
 /// The partition column of a table that has one, as its reads use it.
@@ -652,6 +673,7 @@ pub(crate) fn build_layout(
     for column in declared {
         match type_of(&column.name) {
             Some("text" | "varchar" | "bpchar") => fields.push(TextField {
+                embeds: column.embed.is_some(),
                 name: column.name,
                 on_oversize: column.on_oversize,
             }),
@@ -776,6 +798,8 @@ struct Read {
     missing: Vec<String>,
     /// Rows the `error` policy refuses: `(id, message)`, dead-lettered without a request.
     rejected: Vec<(String, String)>,
+    /// `(partition, id)` of rows with no text to embed: deleted, not upserted.
+    blank: Vec<(Option<String>, String)>,
 }
 
 impl Read {
@@ -783,6 +807,7 @@ impl Read {
         self.docs.extend(other.docs);
         self.missing.extend(other.missing);
         self.rejected.extend(other.rejected);
+        self.blank.extend(other.blank);
     }
 }
 
@@ -874,12 +899,16 @@ fn read_documents(layout: &Layout, ids: &[String]) -> Read {
     let mut read = Read::default();
     let mut found = HashSet::new();
     for row in rows {
-        let document = route(layout, row.partition).and_then(|partition| {
+        let built = route(layout, row.partition).and_then(|partition| {
             let value = build_document(&row.id, &layout.fields, &row.texts, row.meta)?;
-            Ok(Doc::new(&row.id, value).in_partition(partition))
+            Ok((value, partition))
         });
-        match document {
-            Ok(doc) => read.docs.push(doc),
+        match built {
+            Ok((Some(value), partition)) => {
+                read.docs
+                    .push(Doc::new(&row.id, value).in_partition(partition));
+            }
+            Ok((None, partition)) => read.blank.push((partition, row.id.clone())),
             Err(message) => read.rejected.push((row.id.clone(), message)),
         }
         found.insert(row.id);
@@ -915,10 +944,11 @@ pub(crate) struct Page {
     pub(crate) last: Option<Cursor>,
 }
 
-/// A row of the next page, built into its document (`Err` = refused, with the reason).
+/// A row of the next page, built into its document (`Err` = refused, with the reason; `None` =
+/// no text to embed, skipped).
 pub(crate) struct Built {
     pub(crate) at: Cursor,
-    pub(crate) document: Result<Doc, String>,
+    pub(crate) document: Result<Option<Doc>, String>,
 }
 
 /// Cuts a page from rows already turned into documents at the byte budget: the row that would
@@ -928,13 +958,14 @@ pub(crate) fn assemble_page(built: impl IntoIterator<Item = Built>, max_bytes: u
     let (mut page, mut bytes) = (Page::default(), 0usize);
     for Built { at, document } in built {
         match document {
-            Ok(doc) => {
+            Ok(Some(doc)) => {
                 if !page.docs.is_empty() && bytes + doc.bytes > max_bytes {
                     break;
                 }
                 bytes += doc.bytes;
                 page.docs.push(doc);
             }
+            Ok(None) => {}
             Err(message) => page.rejected.push((at.id.clone(), message)),
         }
         page.rows += 1;
@@ -1113,7 +1144,7 @@ impl Reading<PlannedRow> for PageReader<'_> {
             let layout = self.layout;
             let document = route(layout, row.partition).and_then(|partition| {
                 let value = build_document(&row.id, &layout.fields, &row.texts, row.meta)?;
-                Ok(Doc::new(&row.id, value).in_partition(partition))
+                Ok(value.map(|value| Doc::new(&row.id, value).in_partition(partition)))
             });
             self.built.push(Built { at, document });
         }
@@ -1194,16 +1225,30 @@ pub(crate) struct Lane {
     index: String,
     namespace: String,
     partitioned: bool,
+    max_docs: usize,
+    /// What Pinecone adds to each document's size: the vector it derives from embedded text.
+    derived_bytes: usize,
 }
 
 impl Lane {
     pub(crate) fn new(client: std::sync::Arc<Client>, registry: &DocRegistryRow) -> Self {
+        let columns = docs_schema::parse_text_columns(&registry.text_columns).unwrap_or_default();
+        let embed = columns.into_iter().find_map(|column| column.embed);
+        let (max_docs, derived_bytes) = match embed {
+            None => (PACK_MAX_DOCS, 0),
+            Some(embed) => {
+                let dimension = embed["dimension"].as_u64().unwrap_or(EMBED_MAX_DIMENSION);
+                (EMBED_PACK_MAX_DOCS, dimension as usize * size_of::<f32>())
+            }
+        };
         Self {
             client,
             relid: registry.relid,
             index: registry.index_name.clone(),
             namespace: registry.namespace.clone(),
             partitioned: registry.partition.is_some(),
+            max_docs,
+            derived_bytes,
         }
     }
 
@@ -1314,7 +1359,7 @@ impl<'a> Sender<'a> {
     pub(crate) fn send(&mut self, docs: Vec<Doc>) -> Result<(), ClientError> {
         let lane = self.lane;
         for (namespace, group) in lane.route(docs) {
-            for batch in pack(group, PACK_MAX_DOCS, PACK_MAX_BYTES) {
+            for batch in pack(group, lane.max_docs, PACK_MAX_BYTES, lane.derived_bytes) {
                 let result = upsert_bisecting(
                     &mut |docs| lane.upsert(&namespace, docs),
                     &batch,
@@ -1489,6 +1534,8 @@ impl Reading<String> for GroupReader<'_, '_> {
 struct Upserted {
     /// Ids whose row is gone.
     missing: Vec<String>,
+    /// `(partition, id)` of rows with no text to embed.
+    blank: Vec<(Option<String>, String)>,
     /// `(partition, id)` of every document read: a delete aimed at the same namespace is moot.
     placed: HashSet<(Option<String>, String)>,
 }
@@ -1528,6 +1575,7 @@ fn deliver_upserts(
             }
             progress.upserts_done(read.rejected.into_iter().map(|(id, _)| id));
             found.missing.extend(read.missing);
+            found.blank.extend(read.blank);
             let read_at = read.docs.iter();
             found
                 .placed
@@ -1622,7 +1670,13 @@ fn deliver_deletes(
     sent: &mut bool,
     budget: &Budget,
 ) -> Result<(), Stop> {
-    let gone: HashSet<&str> = found.missing.iter().map(String::as_str).collect();
+    let blank = found.blank.iter().map(|(_, id)| id.as_str());
+    let gone: HashSet<&str> = found
+        .missing
+        .iter()
+        .map(String::as_str)
+        .chain(blank)
+        .collect();
     // Rows that exist keep their dead letter: it is the upsert's, whatever stale copy goes.
     let live: HashSet<&str> = (plan.upserts.iter().map(|upsert| upsert.id.as_str()))
         .filter(|id| !gone.contains(id))
@@ -1642,6 +1696,10 @@ fn deliver_deletes(
             true => progress.upserts_done([id.clone()]),
             false => owed.add(lane.namespace.clone(), id.clone(), Settles::Upsert),
         }
+    }
+    for (partition, id) in &found.blank {
+        let namespace = lane.namespace_of(partition.as_deref());
+        owed.add(namespace, id.clone(), Settles::Upsert);
     }
     for (namespace, entries) in &owed.by_namespace {
         for chunk in entries.chunks(DELETE_CHUNK) {
@@ -2518,12 +2576,12 @@ mod tests {
     fn packing_respects_the_document_count_and_the_byte_budget() {
         let docs: Vec<Doc> = (0..5).map(|n| doc(&n.to_string(), 100)).collect();
         let one = docs[0].bytes;
-        let by_count = pack(docs, 2, usize::MAX);
+        let by_count = pack(docs, 2, usize::MAX, 0);
         let sizes: Vec<usize> = by_count.iter().map(Vec::len).collect();
         assert_eq!(sizes, [2, 2, 1]);
 
         let docs: Vec<Doc> = (0..5).map(|n| doc(&n.to_string(), 100)).collect();
-        let by_bytes = pack(docs, 1000, one * 2 + one / 2);
+        let by_bytes = pack(docs, 1000, one * 2 + one / 2, 0);
         let sizes: Vec<usize> = by_bytes.iter().map(Vec::len).collect();
         assert_eq!(sizes, [2, 2, 1]);
         let order: Vec<&str> = by_bytes.iter().flatten().map(|d| d.id.as_str()).collect();
@@ -2533,10 +2591,19 @@ mod tests {
     #[test]
     fn a_document_over_the_byte_budget_travels_alone() {
         let docs = vec![doc("a", 10), doc("big", 5_000), doc("b", 10)];
-        let packed = pack(docs, 1000, 1_000);
+        let packed = pack(docs, 1000, 1_000, 0);
         let sizes: Vec<usize> = packed.iter().map(Vec::len).collect();
         assert_eq!(sizes, [1, 1, 1]);
-        assert!(pack(Vec::new(), 10, 10).is_empty());
+        assert!(pack(Vec::new(), 10, 10, 0).is_empty());
+    }
+
+    #[test]
+    fn packing_counts_the_vector_pinecone_derives_from_embedded_text() {
+        let docs: Vec<Doc> = (0..4).map(|n| doc(&n.to_string(), 100)).collect();
+        let one = docs[0].bytes;
+        let packed = pack(docs, 1000, (one + 500) * 2, 500);
+        let sizes: Vec<usize> = packed.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [2, 2]);
     }
 
     // ---- bisecting a rejected request ----
@@ -2806,7 +2873,7 @@ mod tests {
         let value = json!({"_id": id, "pad": "x".repeat(bytes)});
         Built {
             at: at(id),
-            document: Ok(Doc::new(id, value)),
+            document: Ok(Some(Doc::new(id, value))),
         }
     }
 
@@ -2877,7 +2944,7 @@ mod tests {
         let doc = Doc::new("7", json!({"_id": "7"})).in_partition(Some("Acme Corp".to_string()));
         let rows = [Built {
             at: last.clone(),
-            document: Ok(doc),
+            document: Ok(Some(doc)),
         }];
         let page = assemble_page(rows, 100);
         assert_eq!(page.last, Some(last));
@@ -2890,7 +2957,41 @@ mod tests {
         TextField {
             name: name.to_string(),
             on_oversize,
+            embeds: false,
         }
+    }
+
+    #[test]
+    fn a_row_with_no_text_to_embed_has_no_document() {
+        let fields = [
+            TextField {
+                embeds: true,
+                ..field("body", OnOversize::Truncate)
+            },
+            field("title", OnOversize::Truncate),
+        ];
+        for body in [None, Some(String::new()), Some(" \n\t".to_string())] {
+            let texts = [body.clone(), Some("a title".to_string())];
+            assert_eq!(
+                build_document("1", &fields, &texts, None),
+                Ok(None),
+                "{body:?}"
+            );
+        }
+        let texts = [Some("text".to_string()), None];
+        assert!(build_document("1", &fields, &texts, None).is_ok_and(|doc| doc.is_some()));
+    }
+
+    #[test]
+    fn a_page_skips_a_row_with_no_text_to_embed_but_moves_past_it() {
+        let skipped = Built {
+            at: at("2"),
+            document: Ok(None),
+        };
+        let page = assemble_page([built("1", 10), skipped, built("3", 10)], 1_000);
+        assert_eq!(page_ids(&page), ["1", "3"]);
+        assert!(page.rejected.is_empty());
+        assert_eq!(page.rows, 3);
     }
 
     #[test]
@@ -2901,7 +3002,9 @@ mod tests {
         ];
         let texts = [Some("a title".to_string()), None];
         let meta = Some(json!({"author": "ann", "embedding": [0.5, 1.0]}));
-        let built = build_document("7", &fields, &texts, meta).expect("document");
+        let built = build_document("7", &fields, &texts, meta)
+            .expect("document")
+            .expect("built");
         assert_eq!(
             built,
             json!({"_id": "7", "title": "a title", "author": "ann", "embedding": [0.5, 1.0]})
@@ -2915,7 +3018,9 @@ mod tests {
             field("title", OnOversize::Truncate),
         ];
         let texts = [Some("ab ".repeat(22_000)), Some("short".to_string())];
-        let built = build_document("1", &fields, &texts, None).expect("document");
+        let built = build_document("1", &fields, &texts, None)
+            .expect("document")
+            .expect("built");
         let body = built["body"].as_str().expect("body");
         assert!(body.split_whitespace().count() <= 9_000, "{}", body.len());
         assert_eq!(built["pg_pinecone_truncated"], json!(true));
@@ -2925,7 +3030,9 @@ mod tests {
     #[test]
     fn an_untouched_document_carries_no_marker() {
         let fields = [field("body", OnOversize::Truncate)];
-        let built = build_document("1", &fields, &[Some("fine".to_string())], None).expect("doc");
+        let built = build_document("1", &fields, &[Some("fine".to_string())], None)
+            .expect("doc")
+            .expect("built");
         assert!(built.get("pg_pinecone_truncated").is_none(), "{built}");
     }
 

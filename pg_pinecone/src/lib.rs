@@ -11921,6 +11921,67 @@ mod tests {
         );
     }
 
+    /// Pinecone refuses a document whose embed field is missing or blank, so such a row stays out
+    /// of the index — no dead letter — and a row that loses its text leaves it.
+    #[pg_test]
+    fn track_docs_embed_keeps_rows_with_no_text_out_of_the_index() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_blank");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) VALUES (1, 'text'), (2, NULL), (3, ''), (4, '  ')"
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace), fts_set(&["1"]));
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+
+        fts_run(&format!("UPDATE {t} SET body = NULL WHERE id = 1"));
+        fts_drain(t);
+        assert!(env.docs.remote_ids(&env.namespace).is_empty());
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+    }
+
+    /// The backfill skips a row with no text to embed and moves past it.
+    #[pg_test]
+    fn track_docs_embed_backfill_skips_rows_with_no_text() {
+        let env = FtsEnv::untracked("fts_t21_embed_blank_backfill");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) VALUES (1, NULL), (2, 'text'), (3, '')"
+        ));
+        fts_run(&format!(
+            "SELECT {FTS_TRACK}({}, text_columns => {}::jsonb, index_name => {})",
+            fts_rel(t),
+            quote_literal(r#"{"body": {"embed": {"model": "gemini-embedding-2"}}}"#),
+            quote_literal(&env.index),
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace), fts_set(&["2"]));
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+    }
+
+    /// An index that embeds a field takes at most 96 documents per upsert.
+    #[pg_test]
+    fn track_docs_embed_sends_at_most_96_documents_per_upsert() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_batch");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) SELECT n, 'row ' || n FROM generate_series(1, 250) n"
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace).len(), 250);
+        let upserts = env.docs.calls_to(Endpoint::Upsert);
+        for call in &upserts {
+            let sent = call.body.as_ref().expect("upsert body")["documents"]
+                .as_array()
+                .map_or(0, Vec::len);
+            assert!(
+                (1..=96).contains(&sent),
+                "an upsert carried {sent} documents"
+            );
+        }
+        assert_eq!(upserts.len(), 3, "250 documents in requests of at most 96");
+    }
+
     /// A quota 403 (Pinecone overloads 403 for it) is not blamed on the declaration.
     #[pg_test]
     fn track_docs_quota_refusal_from_create_is_not_a_schema_error() {

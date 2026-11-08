@@ -873,6 +873,9 @@ SELECT a.* FROM pinecone.search_docs('articles', 'databases for AI apps', mode =
   column answers BM25 (`mode => 'text'`) and semantic (`mode => 'embed'`) search. `embed` uses the
   index's single dense slot, so it is mutually exclusive with `vector_column` and at most one text
   column may set it.
+- **Rows with no text are not indexed.** Pinecone needs text to embed, so a row whose `embed`
+  column is NULL or blank is left out of the index (a copy already there is deleted), not
+  dead-lettered. Sync sends at most 96 documents per request to such an index.
 - **Remote only.** Hosted embedding runs at Pinecone, so `search_docs(engine => 'local')` refuses
   `mode => 'embed'` (`0A000`, pointing at `engine => 'remote'`); local Postgres FTS still serves
   `mode => 'text'` on the same column.

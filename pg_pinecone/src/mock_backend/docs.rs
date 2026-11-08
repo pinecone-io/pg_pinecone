@@ -48,6 +48,8 @@ pub const EXPECTED_API_VERSION: &str = "2026-07";
 
 /// Documented per-request and per-document limits (Pinecone docs, 2026-09-29).
 const MAX_DOCS_PER_REQUEST: usize = 1000;
+/// One upsert to an index that embeds a field is one embedding call, so it takes fewer documents.
+const MAX_EMBEDDED_DOCS_PER_REQUEST: usize = 96;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 512;
 const MAX_FIELD_NAME_BYTES: usize = 64;
@@ -904,12 +906,16 @@ fn upsert(state: &mut State, ns: &str, body: Option<&Value>, size: usize) -> Rep
         return error_reply(400, "documents must be an array");
     };
     if !state.lenient {
-        let count_ok = (1..=MAX_DOCS_PER_REQUEST).contains(&docs.len());
+        let max_docs = match state.active_schema.as_ref().is_some_and(embeds) {
+            true => MAX_EMBEDDED_DOCS_PER_REQUEST,
+            false => MAX_DOCS_PER_REQUEST,
+        };
+        let count_ok = (1..=max_docs).contains(&docs.len());
         if !count_ok || size > MAX_REQUEST_BYTES {
             return error_reply(
                 400,
                 &format!(
-                    "a request holds 1-{MAX_DOCS_PER_REQUEST} documents and at most 2 MB (got {} documents, {size} bytes)",
+                    "a request holds 1-{max_docs} documents and at most 2 MB (got {} documents, {size} bytes)",
                     docs.len()
                 ),
             );
@@ -927,6 +933,12 @@ fn upsert(state: &mut State, ns: &str, body: Option<&Value>, size: usize) -> Rep
         }
     }
     ok(202, json!({ "upserted_count": docs.len() }))
+}
+
+fn embeds(schema: &Value) -> bool {
+    schema["fields"]
+        .as_object()
+        .is_some_and(|fields| fields.values().any(|f| f.get("embed").is_some()))
 }
 
 fn metadata_value_ok(value: &Value) -> bool {
@@ -952,6 +964,14 @@ fn validate_document(doc: &Value, schema: Option<&Value>) -> Result<(), String> 
         ));
     }
     let declared_fields = schema.and_then(|s| s["fields"].as_object());
+    for (name, field) in declared_fields.into_iter().flatten() {
+        let text = fields.get(name).and_then(Value::as_str);
+        if field.get("embed").is_some() && text.is_none_or(|t| t.trim().is_empty()) {
+            return Err(format!(
+                "Document '{id}': field '{name}' is missing or empty, so there is no text to embed"
+            ));
+        }
+    }
     let mut metadata_bytes = 0;
     for (name, value) in fields.iter().filter(|(name, _)| *name != "_id") {
         check_field_name(name).map_err(|m| format!("Document '{id}': {m}"))?;
