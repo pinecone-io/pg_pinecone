@@ -2,15 +2,16 @@ name: Release
 
 # Cut a release by pushing a v* tag (e.g. `git tag v0.2.1 && git push --tags`).
 # Builds a packaged pg_pinecone extension per OS/arch and Postgres major (17, 18),
-# smoke-tests each tarball on its Postgres, and attaches the tarballs to the
-# GitHub release. workflow_dispatch re-runs the build against an existing tag; it refuses to replace
+# smoke-tests each tarball on its Postgres, attaches the tarballs to a draft
+# GitHub release, then publishes it (draft so uploads work under immutable
+# releases, which lock a release on publish). workflow_dispatch re-runs the build against an existing tag; it refuses to replace
 # assets already attached to that release unless `overwrite` is set (a re-run of a tag push's own
 # run replaces its earlier upload). postgresapp-sign also attaches
 # pg_pinecone-pg18-<version>.pkg; a notarization failure does not block the tarball upload.
 #
 # Dry run: a PR touching this file, the smoke script, or packaging/postgresapp
 # also runs the full six-leg build matrix (same jobs, same matrix) and the unsigned
-# Postgres.app build, but skips create-release/upload/postgresapp-sign
+# Postgres.app build, but skips create-release/upload/publish/postgresapp-sign
 # — it never touches a real release. This exists because v0.5.0 shipped a
 # release.yml change (per-arch RUSTFLAGS) that broke both arm64 legs, and the
 # matrix only ever builds at tag time, so nothing caught it pre-tag. Now editing
@@ -69,13 +70,16 @@ jobs:
             exit 1
           fi
 
+      # A draft, so the upload jobs can attach assets: immutable releases lock a
+      # release on publish, which refused the post-publish upload before. The
+      # publish job flips it live once every asset is attached.
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ github.token }}
           OVERWRITE: ${{ inputs.overwrite }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --latest
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --draft
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$OVERWRITE" != true ]; then
             attached=$(gh release view "$RELEASE_TAG" --json assets \
               --jq '[.assets[].name | select(startswith("pg_pinecone-"))] | join(", ")')
@@ -227,6 +231,22 @@ jobs:
             flags+=(--clobber)
           fi
           gh release upload "$RELEASE_TAG" dist/* "${flags[@]}"
+
+  # Flips the draft live once the tarballs are up (and the Postgres.app package,
+  # when the sign job produced one). The tarball upload must have succeeded; the
+  # signed package is best-effort, so a skipped or failed sign job still ships.
+  publish:
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.upload.result == 'success' }}
+    needs: [upload, postgresapp-sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
 
   # Unsigned Postgres.app build. Runs on a PR dry run too. No signing secrets:
   # the signed package is a separate job so a pull request cannot read them.
