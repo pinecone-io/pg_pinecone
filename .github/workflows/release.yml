@@ -236,7 +236,7 @@ jobs:
   # when the sign job produced one). The tarball upload must have succeeded; the
   # signed package is best-effort, so a skipped or failed sign job still ships.
   publish:
-    if: always() && github.event_name != 'pull_request' && needs.upload.result == 'success'
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.upload.result == 'success' }}
     needs: [upload, postgresapp-sign]
     runs-on: ubuntu-latest
     permissions:
