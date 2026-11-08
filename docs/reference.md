@@ -866,7 +866,9 @@ SELECT a.* FROM pinecone.search_docs('articles', 'databases for AI apps', mode =
 - **The `embed` object** is forwarded to Pinecone, which resolves and fixes the rest: `model`
   (required) and optional `dimension`, `metric`, `processing_location`, `write_parameters` /
   `read_parameters` (e.g. `task_type`). pg_pinecone checks only that `model` is a non-empty string
-  and any `dimension` is in range; Pinecone is authoritative on the model and the plan.
+  and any `dimension` is in range; Pinecone is authoritative on the model and the plan. Attaching
+  an existing index compares every `embed` key you declared (nested ones too) and refuses on a
+  difference; keys you left out take whatever the index resolved.
 - **One field serves both.** `embed` composes with `full_text_search` on the same column, so one
   column answers BM25 (`mode => 'text'`) and semantic (`mode => 'embed'`) search. `embed` uses the
   index's single dense slot, so it is mutually exclusive with `vector_column` and at most one text

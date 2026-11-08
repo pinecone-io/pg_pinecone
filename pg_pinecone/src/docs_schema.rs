@@ -599,7 +599,7 @@ fn comparable(spec: &Value) -> Value {
                 out.insert("full_text_search".to_string(), analyzer(config));
             }
             if let Some(embed) = spec.get("embed") {
-                out.insert("embed".to_string(), json!({"model": embed.get("model")}));
+                out.insert("embed".to_string(), embed.clone());
             }
             Value::Object(out)
         }
@@ -645,7 +645,11 @@ pub(crate) fn schema_mismatch(declared: &Value, remote: &Value) -> Option<Schema
         .unwrap_or(&none);
     for (name, spec) in declared_fields {
         let want = comparable(spec);
-        let have = remote_fields.get(name).map(comparable);
+        let mut have = remote_fields.get(name).map(comparable);
+        if let (Some(Value::Object(have)), Some(declared)) = (&mut have, want.get("embed")) {
+            let projected = project(have.get("embed"), declared);
+            have.insert("embed".to_string(), projected);
+        }
         if have.as_ref() != Some(&want) {
             return Some(SchemaMismatch {
                 field: name.clone(),
@@ -662,6 +666,19 @@ pub(crate) fn schema_mismatch(declared: &Value, remote: &Value) -> Option<Schema
             remote: Some(comparable(spec)),
             declared: None,
         })
+}
+
+/// `have` restricted to the keys `want` names, recursively: what Pinecone resolved on its own
+/// (a default dimension, `truncate`, ...) does not count, what was declared does.
+fn project(have: Option<&Value>, want: &Value) -> Value {
+    match (have, want) {
+        (Some(Value::Object(have)), Value::Object(want)) => Value::Object(
+            want.iter()
+                .map(|(key, w)| (key.clone(), project(have.get(key), w)))
+                .collect(),
+        ),
+        (have, _) => have.cloned().unwrap_or(Value::Null),
+    }
 }
 
 /// What Pinecone's per-field limits are measured on.
@@ -1053,6 +1070,54 @@ mod tests {
         assert!(
             schema_mismatch(&declared, &described("llama-text-embed-v2")).is_some(),
             "a different embedding model is a mismatch"
+        );
+    }
+
+    #[test]
+    fn attach_compares_every_embed_key_the_declaration_names() {
+        let declare = |embed: &str| {
+            derive_schema(
+                &parse_ok(&format!(r#"{{"chunk_text": {{"embed": {embed}}}}}"#)),
+                None,
+            )
+            .expect("schema")
+        };
+        let described = json!({"fields": {"chunk_text": {
+            "type": "string",
+            "full_text_search": {"language": "en", "stemming": true, "stop_words": true},
+            "embed": {"model": "gemini-embedding-2", "dimension": 3072, "metric": "cosine",
+                      "processing_location": "global",
+                      "write_parameters": {"truncate": "END", "input_type": "passage",
+                                           "task_type": "retrieval_document"},
+                      "read_parameters": {"truncate": "END", "input_type": "query",
+                                          "task_type": "retrieval_query"}},
+        }}});
+        let matching = declare(
+            r#"{"model": "gemini-embedding-2", "dimension": 3072,
+                "write_parameters": {"task_type": "retrieval_document"}}"#,
+        );
+        assert_eq!(schema_mismatch(&matching, &described), None);
+
+        let mismatch = schema_mismatch(
+            &declare(r#"{"model": "gemini-embedding-2", "dimension": 1024}"#),
+            &described,
+        )
+        .expect("a declared dimension that differs");
+        assert_eq!(
+            mismatch.describe(),
+            r#"field "chunk_text" is {"embed":{"dimension":3072,"model":"gemini-embedding-2"},"full_text_search":{"language":"en","stemming":true,"stop_words":true}} remotely, {"embed":{"dimension":1024,"model":"gemini-embedding-2"},"full_text_search":{"language":"en","stemming":true,"stop_words":true}} declared"#
+        );
+
+        assert!(
+            schema_mismatch(
+                &declare(
+                    r#"{"model": "gemini-embedding-2",
+                        "write_parameters": {"task_type": "clustering"}}"#
+                ),
+                &described
+            )
+            .is_some(),
+            "a declared nested task_type that differs"
         );
     }
 
