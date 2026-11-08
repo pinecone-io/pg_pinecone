@@ -988,7 +988,11 @@ impl Client {
             400 | 422 => Err(Error::BadRequest {
                 message: extract_message(&mut resp),
             }),
-            401 | 403 => Err(Error::Auth),
+            401 => Err(Error::Auth),
+            403 => Err(Error::Api {
+                status: 403,
+                message: extract_message(&mut resp),
+            }),
             409 => Err(Error::Conflict {
                 name: req.name.clone(),
             }),
@@ -1231,7 +1235,8 @@ impl Client {
             400 | 422 => Err(Error::BadRequest {
                 message: extract_message(&mut resp),
             }),
-            401 | 403 => Err(Error::Auth),
+            401 => Err(Error::Auth),
+            403 => Err(forbidden(&mut resp)),
             status => Err(Error::Api {
                 status,
                 message: read_text(&mut resp),
@@ -2507,11 +2512,16 @@ pub fn names_namespace_limit(message: &str) -> bool {
             .any(|word| message.contains(word))
 }
 
-/// A 403 refuses the credentials, unless its body says the plan's namespace limit was reached:
-/// that is the plan refusing a new namespace, which the caller can act on.
+/// Pinecone refusing what the plan does not include, e.g. a hosted embedding model.
+fn names_plan_refusal(message: &str) -> bool {
+    message.contains("not available on your plan")
+}
+
+/// A 403 refuses the credentials, unless its body says the plan refused: its namespace limit
+/// was reached, or it does not include what the request uses. The caller can act on either.
 fn forbidden(resp: &mut Response<Body>) -> Error {
     let message = extract_message(resp);
-    if names_namespace_limit(&message) {
+    if names_namespace_limit(&message) || names_plan_refusal(&message) {
         Error::Api {
             status: 403,
             message,

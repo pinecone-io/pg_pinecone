@@ -48,6 +48,8 @@ pub const EXPECTED_API_VERSION: &str = "2026-07";
 
 /// Documented per-request and per-document limits (Pinecone docs, 2026-09-29).
 const MAX_DOCS_PER_REQUEST: usize = 1000;
+/// One upsert to an index that embeds a field is one embedding call, so it takes fewer documents.
+const MAX_EMBEDDED_DOCS_PER_REQUEST: usize = 96;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 512;
 const MAX_FIELD_NAME_BYTES: usize = 64;
@@ -720,9 +722,25 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
     for (name, field) in fields {
         check_field_name(name)?;
         match field["type"].as_str() {
-            Some("string") if field.get("full_text_search").is_some() => {
-                text += 1;
-                validate_fts_options(name, &field["full_text_search"])?;
+            // embed/sparse_embed on a `string` claim the one dense/sparse slot, like a *_vector field.
+            Some("string") => {
+                let has_fts = field.get("full_text_search").is_some();
+                let has_embed = field.get("embed").is_some();
+                let has_sparse_embed = field.get("sparse_embed").is_some();
+                if !has_fts && !has_embed && !has_sparse_embed {
+                    return Err(only_search_fields(name));
+                }
+                if has_fts {
+                    text += 1;
+                    validate_fts_options(name, &field["full_text_search"])?;
+                }
+                if has_embed {
+                    dense += 1;
+                    validate_embed(name, &field["embed"])?;
+                }
+                if has_sparse_embed {
+                    sparse += 1;
+                }
             }
             Some("dense_vector") => {
                 dense += 1;
@@ -736,14 +754,7 @@ fn validate_schema(schema: &Value) -> Result<(), String> {
                 }
             }
             Some("sparse_vector") => sparse += 1,
-            _ => {
-                return Err(format!(
-                    "The schema only accepts fields used for search (field types `dense_vector`, \
-                     `sparse_vector`, and `string` with `full_text_search` configuration). To use \
-                     field '{name}' for filtering (field types `boolean`, `float`, `string`, or \
-                     `string_list`), omit it from the schema and include it in documents."
-                ));
-            }
+            _ => return Err(only_search_fields(name)),
         }
     }
     if text > 100 || dense > 1 || sparse > 1 {
@@ -787,6 +798,36 @@ fn validate_fts_options(field: &str, fts: &Value) -> Result<(), String> {
     }
     if flag("stop_words") && !flag("stemming") {
         return Err(format!("field '{field}': stop_words requires stemming"));
+    }
+    Ok(())
+}
+
+fn only_search_fields(name: &str) -> String {
+    format!(
+        "The schema only accepts fields used for search (field types `dense_vector`, \
+         `sparse_vector`, and `string` with `full_text_search`, `embed` or `sparse_embed` \
+         configuration). To use field '{name}' for filtering (field types `boolean`, `float`, \
+         `string`, or `string_list`), omit it from the schema and include it in documents."
+    )
+}
+
+fn validate_embed(field: &str, embed: &Value) -> Result<(), String> {
+    let Some(options) = embed.as_object() else {
+        return Err(format!("field '{field}': embed must be an object"));
+    };
+    if let Some(model) = options.get("model")
+        && !model.as_str().is_some_and(|m| !m.is_empty())
+    {
+        return Err(format!(
+            "field '{field}': embed model must be a non-empty string"
+        ));
+    }
+    if let Some(dimension) = options.get("dimension")
+        && !dimension.as_u64().is_some_and(|d| d > 0)
+    {
+        return Err(format!(
+            "field '{field}': embed dimension must be a positive integer"
+        ));
     }
     Ok(())
 }
@@ -865,12 +906,16 @@ fn upsert(state: &mut State, ns: &str, body: Option<&Value>, size: usize) -> Rep
         return error_reply(400, "documents must be an array");
     };
     if !state.lenient {
-        let count_ok = (1..=MAX_DOCS_PER_REQUEST).contains(&docs.len());
+        let max_docs = match state.active_schema.as_ref().is_some_and(embeds) {
+            true => MAX_EMBEDDED_DOCS_PER_REQUEST,
+            false => MAX_DOCS_PER_REQUEST,
+        };
+        let count_ok = (1..=max_docs).contains(&docs.len());
         if !count_ok || size > MAX_REQUEST_BYTES {
             return error_reply(
                 400,
                 &format!(
-                    "a request holds 1-{MAX_DOCS_PER_REQUEST} documents and at most 2 MB (got {} documents, {size} bytes)",
+                    "a request holds 1-{max_docs} documents and at most 2 MB (got {} documents, {size} bytes)",
                     docs.len()
                 ),
             );
@@ -888,6 +933,12 @@ fn upsert(state: &mut State, ns: &str, body: Option<&Value>, size: usize) -> Rep
         }
     }
     ok(202, json!({ "upserted_count": docs.len() }))
+}
+
+fn embeds(schema: &Value) -> bool {
+    schema["fields"]
+        .as_object()
+        .is_some_and(|fields| fields.values().any(|f| f.get("embed").is_some()))
 }
 
 fn metadata_value_ok(value: &Value) -> bool {
@@ -913,6 +964,14 @@ fn validate_document(doc: &Value, schema: Option<&Value>) -> Result<(), String> 
         ));
     }
     let declared_fields = schema.and_then(|s| s["fields"].as_object());
+    for (name, field) in declared_fields.into_iter().flatten() {
+        let text = fields.get(name).and_then(Value::as_str);
+        if field.get("embed").is_some() && text.is_none_or(|t| t.trim().is_empty()) {
+            return Err(format!(
+                "Document '{id}': field '{name}' is missing or empty, so there is no text to embed"
+            ));
+        }
+    }
     let mut metadata_bytes = 0;
     for (name, value) in fields.iter().filter(|(name, _)| *name != "_id") {
         check_field_name(name).map_err(|m| format!("Document '{id}': {m}"))?;
@@ -1036,7 +1095,14 @@ fn validate_search(body: &Value) -> Result<(), String> {
     let clauses = body["score_by"].as_array().filter(|c| !c.is_empty());
     let clauses = clauses.ok_or("score_by must be a non-empty array")?;
     let types: BTreeSet<&str> = clauses.iter().filter_map(|c| c["type"].as_str()).collect();
-    let known = ["text", "query_string", "dense_vector", "sparse_vector"];
+    let known = [
+        "text",
+        "query_string",
+        "dense_vector",
+        "sparse_vector",
+        "embed",
+        "sparse_embed",
+    ];
     if types.len() != 1 || !types.iter().all(|t| known.contains(t)) {
         return Err(format!(
             "a request uses exactly one scoring type, got {types:?}"
@@ -1081,6 +1147,12 @@ fn validate_clause(clause: &Value) -> Result<(), String> {
         }
         "dense_vector" if !clause["values"].as_array().is_some_and(|v| !v.is_empty()) => {
             Err("dense_vector: values must be a non-empty array".to_string())
+        }
+        "embed" | "sparse_embed" if query.is_none_or(str::is_empty) => {
+            Err(format!("{kind}: query must be a non-empty string"))
+        }
+        "embed" | "sparse_embed" if !fields.is_some_and(|(n, strings)| n == 1 && strings) => {
+            Err(format!("{kind}: fields must name exactly one field"))
         }
         _ => Ok(()),
     }

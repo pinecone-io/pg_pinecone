@@ -22,7 +22,14 @@ pub(crate) const MAX_FIELD_BYTES: usize = 100_000;
 pub(crate) const MAX_TOKEN_BYTES: usize = 256;
 
 const PREFIX: &str = "pinecone.track_docs: ";
-const OPTION_KEYS: [&str; 5] = ["language", "stemming", "stop_words", "ngram", "on_oversize"];
+const OPTION_KEYS: [&str; 6] = [
+    "language",
+    "stemming",
+    "stop_words",
+    "ngram",
+    "on_oversize",
+    "embed",
+];
 const SUPPORTED_METADATA_TYPES: &str = "smallint, integer, bigint, real, double precision, \
      numeric, boolean, text, varchar, char, uuid, date, timestamp, timestamptz, text[]";
 const LANGUAGES: [(&str, &str); 18] = [
@@ -103,7 +110,8 @@ pub(crate) struct Ngram {
 }
 
 /// One declared full-text column with every default resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `embed` is free-form JSON (`Value`), so this is `PartialEq` only.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TextColumn {
     pub(crate) name: String,
     /// Always set for word-tokenised columns; an ngram column has one only if it declared it.
@@ -112,6 +120,8 @@ pub(crate) struct TextColumn {
     pub(crate) stop_words: bool,
     pub(crate) ngram: Option<Ngram>,
     pub(crate) on_oversize: OnOversize,
+    /// Hosted embedding, forwarded to Pinecone verbatim; `Some` enables `mode => 'embed'`.
+    pub(crate) embed: Option<Value>,
 }
 
 /// The one dense field; `metric` is pg_pinecone' name (`cosine`, `l2`, `ip`).
@@ -253,7 +263,38 @@ fn parse_column(name: &str, spec: &Value) -> Result<TextColumn, DocsError> {
     let ngram = present(options, "ngram")
         .map(|value| parse_ngram(name, value))
         .transpose()?;
-    resolve_analyzer(name, language, stemming, stop_words, ngram, on_oversize)
+    let embed = present(options, "embed")
+        .map(|value| parse_embed(name, value))
+        .transpose()?;
+    let mut column = resolve_analyzer(name, language, stemming, stop_words, ngram, on_oversize)?;
+    column.embed = embed;
+    Ok(column)
+}
+
+/// Validates an `embed` option (a `"model"` string, optional in-range `dimension`) and forwards it
+/// to Pinecone verbatim — Pinecone resolves and fixes the rest and is authoritative on the model.
+fn parse_embed(name: &str, value: &Value) -> Result<Value, DocsError> {
+    let hint = r#"e.g. "embed": {"model": "gemini-embedding-2", "dimension": 1024}"#;
+    let Value::Object(map) = value else {
+        return Err(column_error(name, "embed must be a JSON object").hint(hint));
+    };
+    match map.get("model") {
+        Some(Value::String(model)) if !model.trim().is_empty() => {}
+        _ => return Err(column_error(name, "embed needs a non-empty \"model\" string").hint(hint)),
+    }
+    if let Some(dimension) = present(map, "dimension") {
+        let in_range = dimension
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .is_some_and(|n| (1..=MAX_DIMENSION).contains(&n));
+        if !in_range {
+            return Err(column_error(
+                name,
+                format!("embed dimension must be an integer between 1 and {MAX_DIMENSION}"),
+            ));
+        }
+    }
+    Ok(value.clone())
 }
 
 /// Maps a language name to Pinecone's short code; unknown ones pass through for Pinecone to
@@ -346,6 +387,7 @@ fn resolve_analyzer(
         stop_words,
         ngram,
         on_oversize,
+        embed: None,
     })
 }
 
@@ -376,6 +418,9 @@ pub(crate) fn text_columns_json(columns: &[TextColumn]) -> Value {
             "on_oversize".to_string(),
             json!(column.on_oversize.as_str()),
         );
+        if let Some(embed) = &column.embed {
+            options.insert("embed".to_string(), embed.clone());
+        }
         out.insert(column.name.clone(), Value::Object(options));
     }
     Value::Object(out)
@@ -408,7 +453,13 @@ fn text_field(column: &TextColumn) -> Value {
             config.insert("stop_words".to_string(), json!(column.stop_words));
         }
     }
-    json!({"type": "string", "full_text_search": Value::Object(config)})
+    let mut field = Map::new();
+    field.insert("type".to_string(), json!("string"));
+    field.insert("full_text_search".to_string(), Value::Object(config));
+    if let Some(embed) = &column.embed {
+        field.insert("embed".to_string(), embed.clone());
+    }
+    Value::Object(field)
 }
 
 /// The Pinecone schema: one full-text field per text column plus the optional dense field;
@@ -422,6 +473,27 @@ pub(crate) fn derive_schema(
             Code::ERRCODE_INVALID_PARAMETER_VALUE,
             format!("text_columns must declare 1 to {MAX_TEXT_FIELDS} columns"),
         ));
+    }
+    let embed_columns: Vec<&str> = text
+        .iter()
+        .filter(|column| column.embed.is_some())
+        .map(|column| column.name.as_str())
+        .collect();
+    if embed_columns.len() > 1 {
+        return Err(DocsError::new(
+            Code::ERRCODE_INVALID_PARAMETER_VALUE,
+            format!(
+                "only one text column may set embed (an index has one dense slot); got {}",
+                embed_columns.join(", ")
+            ),
+        ));
+    }
+    if !embed_columns.is_empty() && vector.is_some() {
+        return Err(DocsError::new(
+            Code::ERRCODE_INVALID_PARAMETER_VALUE,
+            "embed and vector_column both use the index's single dense slot",
+        )
+        .hint("for hosted embedding drop vector_column; to store your own vectors drop the embed option"));
     }
     let mut fields = Map::new();
     for column in text {
@@ -521,7 +593,16 @@ fn normalise_language(raw: &str) -> String {
 fn comparable(spec: &Value) -> Value {
     let kind = spec.get("type").and_then(Value::as_str);
     match (kind, spec.get("full_text_search")) {
-        (Some("string"), Some(config)) => analyzer(config),
+        (Some("string"), fts) => {
+            let mut out = Map::new();
+            if let Some(config) = fts {
+                out.insert("full_text_search".to_string(), analyzer(config));
+            }
+            if let Some(embed) = spec.get("embed") {
+                out.insert("embed".to_string(), embed.clone());
+            }
+            Value::Object(out)
+        }
         (Some("dense_vector"), _) => json!({"type": "dense_vector",
             "dimension": spec.get("dimension"), "metric": spec.get("metric")}),
         (Some("sparse_vector"), _) => json!({"type": "sparse_vector"}),
@@ -540,7 +621,11 @@ fn comparable(spec: &Value) -> Value {
 fn is_searchable(spec: &Value) -> bool {
     match spec.get("type").and_then(Value::as_str) {
         Some("dense_vector" | "sparse_vector") => true,
-        Some("string") => spec.get("full_text_search").is_some(),
+        Some("string") => {
+            spec.get("full_text_search").is_some()
+                || spec.get("embed").is_some()
+                || spec.get("sparse_embed").is_some()
+        }
         _ => false,
     }
 }
@@ -560,7 +645,11 @@ pub(crate) fn schema_mismatch(declared: &Value, remote: &Value) -> Option<Schema
         .unwrap_or(&none);
     for (name, spec) in declared_fields {
         let want = comparable(spec);
-        let have = remote_fields.get(name).map(comparable);
+        let mut have = remote_fields.get(name).map(comparable);
+        if let (Some(Value::Object(have)), Some(declared)) = (&mut have, want.get("embed")) {
+            let projected = project(have.get("embed"), declared);
+            have.insert("embed".to_string(), projected);
+        }
         if have.as_ref() != Some(&want) {
             return Some(SchemaMismatch {
                 field: name.clone(),
@@ -577,6 +666,19 @@ pub(crate) fn schema_mismatch(declared: &Value, remote: &Value) -> Option<Schema
             remote: Some(comparable(spec)),
             declared: None,
         })
+}
+
+/// `have` restricted to the keys `want` names, recursively: what Pinecone resolved on its own
+/// (a default dimension, `truncate`, ...) does not count, what was declared does.
+fn project(have: Option<&Value>, want: &Value) -> Value {
+    match (have, want) {
+        (Some(Value::Object(have)), Value::Object(want)) => Value::Object(
+            want.iter()
+                .map(|(key, w)| (key.clone(), project(have.get(key), w)))
+                .collect(),
+        ),
+        (have, _) => have.cloned().unwrap_or(Value::Null),
+    }
 }
 
 /// What Pinecone's per-field limits are measured on.
@@ -871,6 +973,152 @@ mod tests {
         let columns = parse_ok(r#"{"body": {"on_oversize": "error"}}"#);
         let schema = derive_schema(&columns, None).expect("schema");
         assert_eq!(schema, json!({"fields": {"body": fts("en", true, true)}}));
+    }
+
+    // ---- integrated (hosted) embedding: the `embed` option ----
+
+    #[test]
+    fn embed_option_derives_an_embed_block_on_the_same_field_as_full_text_search() {
+        let columns = parse_ok(
+            r#"{"chunk_text": {"embed": {"model": "gemini-embedding-2", "dimension": 1024}}}"#,
+        );
+        let schema = derive_schema(&columns, None).expect("schema");
+        assert_eq!(
+            schema,
+            json!({"fields": {"chunk_text": {
+                "type": "string",
+                "full_text_search": {"language": "en", "stemming": true, "stop_words": true},
+                "embed": {"model": "gemini-embedding-2", "dimension": 1024},
+            }}})
+        );
+    }
+
+    #[test]
+    fn embed_round_trips_through_text_columns_json() {
+        let columns = parse_ok(r#"{"chunk_text": {"embed": {"model": "gemini-embedding-2"}}}"#);
+        let back = parse_text_columns(&text_columns_json(&columns)).expect("reparse");
+        assert_eq!(back[0].embed, Some(json!({"model": "gemini-embedding-2"})));
+    }
+
+    #[test]
+    fn embed_needs_a_non_empty_model_string() {
+        for declared in [
+            r#"{"chunk_text": {"embed": {"dimension": 1024}}}"#,
+            r#"{"chunk_text": {"embed": {"model": ""}}}"#,
+            r#"{"chunk_text": {"embed": "gemini-embedding-2"}}"#,
+        ] {
+            let error = parse_err(declared);
+            assert_error(
+                &error,
+                Code::ERRCODE_INVALID_PARAMETER_VALUE,
+                &["embed"],
+                Some("gemini-embedding-2"),
+            );
+        }
+    }
+
+    #[test]
+    fn embed_dimension_must_be_a_positive_integer() {
+        let error = parse_err(r#"{"chunk_text": {"embed": {"model": "m", "dimension": 0}}}"#);
+        assert_error(
+            &error,
+            Code::ERRCODE_INVALID_PARAMETER_VALUE,
+            &["dimension"],
+            None,
+        );
+    }
+
+    #[test]
+    fn embed_and_a_vector_column_both_claim_the_single_dense_slot() {
+        let columns = parse_ok(r#"{"chunk_text": {"embed": {"model": "gemini-embedding-2"}}}"#);
+        let error =
+            derive_schema(&columns, Some(&vector(1024, "cosine"))).expect_err("one dense slot");
+        assert_eq!(error.code, Code::ERRCODE_INVALID_PARAMETER_VALUE);
+        assert!(error.message.contains("single dense slot"), "{error:?}");
+    }
+
+    #[test]
+    fn at_most_one_text_column_may_embed() {
+        let columns =
+            parse_ok(r#"{"a": {"embed": {"model": "m"}}, "b": {"embed": {"model": "m"}}}"#);
+        let error = derive_schema(&columns, None).expect_err("one dense slot");
+        assert!(error.message.contains("one text column"), "{error:?}");
+    }
+
+    #[test]
+    fn attach_matches_on_the_embed_model_ignoring_server_resolved_details() {
+        let declared = derive_schema(
+            &parse_ok(r#"{"chunk_text": {"embed": {"model": "gemini-embedding-2"}}}"#),
+            None,
+        )
+        .expect("schema");
+        let described = |model: &str| {
+            json!({"fields": {"chunk_text": {
+                "type": "string",
+                "full_text_search": {"language": "en", "stemming": true, "stop_words": true,
+                                     "lowercase": true, "max_term_len": 40},
+                "embed": {"model": model, "dimension": 3072, "metric": "cosine",
+                          "processing_location": "global"},
+                "store_text": true,
+            }}})
+        };
+        assert_eq!(
+            schema_mismatch(&declared, &described("gemini-embedding-2")),
+            None,
+            "the same model attaches despite resolved dimension/metric/params"
+        );
+        assert!(
+            schema_mismatch(&declared, &described("llama-text-embed-v2")).is_some(),
+            "a different embedding model is a mismatch"
+        );
+    }
+
+    #[test]
+    fn attach_compares_every_embed_key_the_declaration_names() {
+        let declare = |embed: &str| {
+            derive_schema(
+                &parse_ok(&format!(r#"{{"chunk_text": {{"embed": {embed}}}}}"#)),
+                None,
+            )
+            .expect("schema")
+        };
+        let described = json!({"fields": {"chunk_text": {
+            "type": "string",
+            "full_text_search": {"language": "en", "stemming": true, "stop_words": true},
+            "embed": {"model": "gemini-embedding-2", "dimension": 3072, "metric": "cosine",
+                      "processing_location": "global",
+                      "write_parameters": {"truncate": "END", "input_type": "passage",
+                                           "task_type": "retrieval_document"},
+                      "read_parameters": {"truncate": "END", "input_type": "query",
+                                          "task_type": "retrieval_query"}},
+        }}});
+        let matching = declare(
+            r#"{"model": "gemini-embedding-2", "dimension": 3072,
+                "write_parameters": {"task_type": "retrieval_document"}}"#,
+        );
+        assert_eq!(schema_mismatch(&matching, &described), None);
+
+        let mismatch = schema_mismatch(
+            &declare(r#"{"model": "gemini-embedding-2", "dimension": 1024}"#),
+            &described,
+        )
+        .expect("a declared dimension that differs");
+        assert_eq!(
+            mismatch.describe(),
+            r#"field "chunk_text" is {"embed":{"dimension":3072,"model":"gemini-embedding-2"},"full_text_search":{"language":"en","stemming":true,"stop_words":true}} remotely, {"embed":{"dimension":1024,"model":"gemini-embedding-2"},"full_text_search":{"language":"en","stemming":true,"stop_words":true}} declared"#
+        );
+
+        assert!(
+            schema_mismatch(
+                &declare(
+                    r#"{"model": "gemini-embedding-2",
+                        "write_parameters": {"task_type": "clustering"}}"#
+                ),
+                &described
+            )
+            .is_some(),
+            "a declared nested task_type that differs"
+        );
     }
 
     #[test]
@@ -1295,7 +1543,7 @@ mod tests {
         assert_eq!(mismatch.field, "body");
         assert_eq!(
             mismatch.describe(),
-            r#"field "body" is {"language":"de","stemming":true,"stop_words":true} remotely, {"language":"en","stemming":true,"stop_words":true} declared"#
+            r#"field "body" is {"full_text_search":{"language":"de","stemming":true,"stop_words":true}} remotely, {"full_text_search":{"language":"en","stemming":true,"stop_words":true}} declared"#
         );
 
         for (key, value) in [("stemming", json!(false)), ("stop_words", json!(false))] {
@@ -1345,7 +1593,7 @@ mod tests {
         );
         assert_eq!(
             mismatch.describe(),
-            r#"field "sku" is missing remotely, {"language":"en","stemming":false,"stop_words":false} declared"#
+            r#"field "sku" is missing remotely, {"full_text_search":{"language":"en","stemming":false,"stop_words":false}} declared"#
         );
 
         let mut remote = described(&declared);

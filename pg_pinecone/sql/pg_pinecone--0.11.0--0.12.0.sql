@@ -1,0 +1,3 @@
+-- 0.11.0 -> 0.12.0: integrated (hosted) embedding on the document API (incl. gemini-embedding-2).
+-- No catalog change: the embedding model rides in the existing `text_columns` options and the
+-- ad-hoc document API already accepted the `embed` schema field, so nothing SQL-visible changed.

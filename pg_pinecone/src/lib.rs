@@ -895,7 +895,11 @@ mod pinecone {
     /// when its schema matches), registers the table, installs the `pg_pinecone_docs_*` triggers
     /// and queues the backfill of the rows that exist. `text_columns` is an object mapping
     /// column names to analyzer options (`{"body": {"language": "en"}}`) or a list of names
-    /// for defaults; `id_column` defaults to the single-column primary key. `partition_column`
+    /// for defaults; a column's options may add `"embed": {"model": "gemini-embedding-2"}` to have
+    /// Pinecone embed that column's text with a hosted model on write and on query, making it
+    /// semantically searchable through `search_docs(mode => 'embed')` (remote only; mutually
+    /// exclusive with `vector_column`). `id_column` defaults to the single-column primary key.
+    /// `partition_column`
     /// (a NOT NULL smallint, integer, bigint, text, varchar or uuid column) gives every value its
     /// own Pinecone namespace, `<schema>.<table>:<value>`, which `search_docs(partition => ...)`
     /// searches one at a time. Everything that can be checked locally is checked before Pinecone
@@ -1419,7 +1423,11 @@ mod pinecone {
 
     /// Creates a document-schema (full-text search) index. `schema` must be a
     /// JSON object with a `"fields"` object (Pinecone validates the field
-    /// definitions themselves); passed through verbatim otherwise. Same
+    /// definitions themselves); passed through verbatim otherwise. A `string`
+    /// field may declare `full_text_search` (BM25), `embed` (a hosted dense model
+    /// such as `gemini-embedding-2`), or both on one field; with `embed`, Pinecone
+    /// embeds the text server-side, so `upsert_docs` sends plain text and
+    /// `search_doc_index` ranks with a `{"type": "embed"}` clause. Same
     /// credential resolution as `pinecone.promote` (a user-invoked remote op,
     /// not a sync-trigger internal call — see
     /// `backend::client_for_effective_key`'s rustdoc).
@@ -1453,7 +1461,9 @@ mod pinecone {
 
     /// Runs a full-text/hybrid search against document-schema index `index`.
     /// `query` is a `score_by` clause object or an array of clauses (a single
-    /// object is normalized to a one-element array); `fields` selects which
+    /// object is normalized to a one-element array); a clause's `type` is `text`,
+    /// `query_string`, `dense_vector`, `sparse_vector`, or `embed`/`sparse_embed`
+    /// to rank by meaning via the field's hosted model. `fields` selects which
     /// document fields to return, defaulting to every field (`["*"]`).
     /// `k = 0` short-circuits to an empty result with no HTTP call.
     #[pg_extern]
@@ -1473,14 +1483,16 @@ mod pinecone {
     /// Full-text search over a table declared with `track_docs`: returns `(id, score, rank)`
     /// from Pinecone, which the caller joins back to the table under its own privileges and
     /// RLS (`ON a.id = s.id::bigint`). `query` is BM25 over every declared text column, or over
-    /// `field` alone; `mode => 'query_string'` passes Lucene syntax through unchanged. `must`
+    /// `field` alone; `mode => 'query_string'` passes Lucene syntax through unchanged;
+    /// `mode => 'embed'` ranks by meaning, embedding `query` with the hosted model of the column
+    /// declared with an `embed` option (remote only). `must`
     /// holds text-match requirements (`{"body": {"$match_all": "TensorFlow"}}`) and `filter`
     /// metadata conditions on declared metadata columns; both are sent as one `$and`. `vector`
     /// ranks by the dense field instead; a `query` next to it needs `field` and becomes a
     /// `$match_all` requirement. `k` is 0 to 10,000 (0 makes no call). Needs SELECT on the table.
     /// `engine => 'local'` runs Postgres full-text search instead (web search syntax, `ts_rank_cd`,
     /// not BM25) as the caller; it takes only `query`, `field` and `k` (and ignores `partition`),
-    /// and an untracked table needs `field`. A table declared with `partition_column` is searched
+    /// an untracked table needs `field`, and it refuses `mode => 'embed'` (no hosted model). A table declared with `partition_column` is searched
     /// one partition at a time: `partition => <value>` (an integer, text or uuid; any value the
     /// column's type reads) names the namespace, or an `$eq` on the column in `filter` does.
     #[pg_extern]
@@ -9584,6 +9596,58 @@ mod tests {
         );
     }
 
+    /// The ad-hoc document API carries integrated (hosted) embedding end to end: create an index
+    /// whose field embeds with `gemini-embedding-2`, upsert plain text, and rank by meaning with an
+    /// `embed` clause — the same surface the table lane uses, driven directly.
+    #[pg_test]
+    fn doc_index_api_supports_integrated_embedding() {
+        let docs = DocsHandle::new();
+        let backend = start_with_docs(&docs);
+        point_at_mock(&backend);
+
+        fts_run(
+            "SELECT pinecone.create_doc_index('kb-gemini', '{\"fields\": {\"chunk_text\": \
+             {\"type\": \"string\", \"embed\": {\"model\": \"gemini-embedding-2\", \"dimension\": 1024}, \
+             \"full_text_search\": {\"language\": \"en\"}}}}'::jsonb)",
+        );
+        let create = docs
+            .calls_to(Endpoint::IndexCreate)
+            .pop()
+            .expect("a create call reached Pinecone");
+        let field = create.body.expect("create body")["schema"]["fields"]["chunk_text"].clone();
+        assert_eq!(
+            field["embed"]["model"],
+            json!("gemini-embedding-2"),
+            "{field}"
+        );
+
+        fts_run(
+            "SELECT pinecone.upsert_docs('kb-gemini', '[{\"_id\": \"1\", \
+             \"chunk_text\": \"Pinecone is a vector database for semantic search.\"}]'::jsonb)",
+        );
+        assert_eq!(
+            docs.remote_ids("__default__"),
+            BTreeSet::from(["1".to_string()])
+        );
+
+        docs.set_search_matches(&[("1", 0.71)]);
+        let found = Spi::get_one::<i64>(
+            "SELECT count(*)::bigint FROM pinecone.search_doc_index('kb-gemini', \
+             '{\"type\": \"embed\", \"fields\": [\"chunk_text\"], \"query\": \"a database for AI\"}'::jsonb)",
+        )
+        .expect("search_doc_index")
+        .expect("count is NOT NULL");
+        assert_eq!(found, 1);
+        let search = docs
+            .calls_to(Endpoint::Search)
+            .pop()
+            .expect("a search call reached Pinecone");
+        assert_eq!(
+            search.body.expect("search body")["score_by"][0]["type"],
+            json!("embed")
+        );
+    }
+
     /// The key a live test calls Pinecone with, or `None` with a NOTICE saying why it skips
     /// ([`crate::smoke::live_gate`]).
     fn live_api_key() -> Option<String> {
@@ -10311,6 +10375,23 @@ mod tests {
                  SELECT i, 'title ' || i, 'body ' || i, 'ann' FROM generate_series(1, {n}) i"
             ));
             env.drain();
+            env.docs.clear_calls();
+            env
+        }
+
+        /// Tracked with hosted (integrated) embedding on `body` via `gemini-embedding-2`, and no
+        /// bring-your-own vector column; backfill of the empty table done, the call log cleared.
+        fn tracked_embed(table: &str) -> Self {
+            let env = Self::untracked(table);
+            fts_run(&format!(
+                "SELECT {FTS_TRACK}({}, text_columns => {}::jsonb, index_name => {})",
+                fts_rel(&env.table),
+                quote_literal(
+                    r#"{"body": {"language": "en", "embed": {"model": "gemini-embedding-2", "dimension": 1024}}}"#
+                ),
+                quote_literal(&env.index),
+            ));
+            fts_drain(&env.table);
             env.docs.clear_calls();
             env
         }
@@ -11778,6 +11859,207 @@ mod tests {
         let error = fts_sql_error(&sql);
         fts_assert_error(&error, "22023", &["vector => with query => needs field =>"]);
         assert_eq!(env.docs.count(Endpoint::Search), 0);
+    }
+
+    // ---- integrated (hosted) embedding: gemini-embedding-2 via the document API ----
+
+    /// A text column declared with an `embed` option makes the derived index a hosted-embedding
+    /// index: the create carries the `embed` block on the same field as its full-text index.
+    #[pg_test]
+    fn track_docs_embed_option_creates_a_hosted_embedding_index() {
+        let env = FtsEnv::untracked("fts_t21_embed");
+        fts_run(&format!(
+            "SELECT {FTS_TRACK}({}, text_columns => {}::jsonb, index_name => {})",
+            fts_rel(&env.table),
+            quote_literal(
+                r#"{"body": {"language": "en", "embed": {"model": "gemini-embedding-2", "dimension": 1024}}}"#
+            ),
+            quote_literal(&env.index),
+        ));
+        let create = env
+            .docs
+            .calls_to(Endpoint::IndexCreate)
+            .pop()
+            .expect("a create call reached Pinecone");
+        let field = create.body.expect("create body")["schema"]["fields"]["body"].clone();
+        assert_eq!(field["type"], json!("string"), "field = {field}");
+        assert_eq!(
+            field["embed"],
+            json!({"model": "gemini-embedding-2", "dimension": 1024})
+        );
+        assert!(
+            field.get("full_text_search").is_some(),
+            "one field serves BM25 and semantic search: {field}"
+        );
+    }
+
+    /// A plan/permission refusal (403) from the create surfaces Pinecone's own message — e.g. the
+    /// model needs a paid plan — not a generic "authentication failed".
+    #[pg_test]
+    fn track_docs_embed_surfaces_a_plan_refusal_from_create() {
+        let env = FtsEnv::untracked("fts_t21_embed_plan");
+        env.docs.fail_always(
+            Endpoint::IndexCreate,
+            403,
+            "Schema field 'body' uses model 'gemini-embedding-2', which is not available on the \
+             Starter plan. Upgrade to the Builder, Standard or Enterprise plan.",
+        );
+        let sql = format!(
+            "SELECT {FTS_TRACK}({}, text_columns => {}::jsonb, index_name => {})",
+            fts_rel(&env.table),
+            quote_literal(r#"{"body": {"embed": {"model": "gemini-embedding-2"}}}"#),
+            quote_literal(&env.index),
+        );
+        let error = fts_sql_error(&sql);
+        assert!(
+            error.message.contains("Starter plan") && error.message.contains("gemini-embedding-2"),
+            "{error:?}"
+        );
+        assert!(
+            !error.message.contains("authentication failed"),
+            "{error:?}"
+        );
+    }
+
+    /// Pinecone refuses a document whose embed field is missing or blank, so such a row stays out
+    /// of the index — no dead letter — and a row that loses its text leaves it.
+    #[pg_test]
+    fn track_docs_embed_keeps_rows_with_no_text_out_of_the_index() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_blank");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) VALUES (1, 'text'), (2, NULL), (3, ''), (4, '  ')"
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace), fts_set(&["1"]));
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+
+        fts_run(&format!("UPDATE {t} SET body = NULL WHERE id = 1"));
+        fts_drain(t);
+        assert!(env.docs.remote_ids(&env.namespace).is_empty());
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+    }
+
+    /// The backfill skips a row with no text to embed and moves past it.
+    #[pg_test]
+    fn track_docs_embed_backfill_skips_rows_with_no_text() {
+        let env = FtsEnv::untracked("fts_t21_embed_blank_backfill");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) VALUES (1, NULL), (2, 'text'), (3, '')"
+        ));
+        fts_run(&format!(
+            "SELECT {FTS_TRACK}({}, text_columns => {}::jsonb, index_name => {})",
+            fts_rel(t),
+            quote_literal(r#"{"body": {"embed": {"model": "gemini-embedding-2"}}}"#),
+            quote_literal(&env.index),
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace), fts_set(&["2"]));
+        assert_eq!(fts_failed_docs(t), Vec::<Value>::new());
+    }
+
+    /// An index that embeds a field takes at most 96 documents per upsert.
+    #[pg_test]
+    fn track_docs_embed_sends_at_most_96_documents_per_upsert() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_batch");
+        let t = &env.table;
+        fts_run(&format!(
+            "INSERT INTO {t} (id, body) SELECT n, 'row ' || n FROM generate_series(1, 250) n"
+        ));
+        fts_drain(t);
+        assert_eq!(env.docs.remote_ids(&env.namespace).len(), 250);
+        let upserts = env.docs.calls_to(Endpoint::Upsert);
+        for call in &upserts {
+            let sent = call.body.as_ref().expect("upsert body")["documents"]
+                .as_array()
+                .map_or(0, Vec::len);
+            assert!(
+                (1..=96).contains(&sent),
+                "an upsert carried {sent} documents"
+            );
+        }
+        assert_eq!(upserts.len(), 3, "250 documents in requests of at most 96");
+    }
+
+    /// A quota 403 (Pinecone overloads 403 for it) is not blamed on the declaration.
+    #[pg_test]
+    fn track_docs_quota_refusal_from_create_is_not_a_schema_error() {
+        let env = FtsEnv::untracked("fts_t21_quota");
+        env.docs.fail_always(
+            Endpoint::IndexCreate,
+            403,
+            "Request failed. You've reached the max serverless indexes allowed in project",
+        );
+        let sql = format!(
+            "SELECT {FTS_TRACK}({}, text_columns => '{{\"body\": {{}}}}'::jsonb, index_name => {})",
+            fts_rel(&env.table),
+            quote_literal(&env.index),
+        );
+        let error = fts_sql_error(&sql);
+        assert!(
+            error.message.contains("max serverless indexes"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("derived schema"), "{error:?}");
+        assert_ne!(error.sqlstate, "22023", "{error:?}");
+        assert!(
+            !error
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fix the declaration"),
+            "{error:?}"
+        );
+    }
+
+    /// `mode => 'embed'` ranks by the embedding field with a text query; Pinecone embeds the query
+    /// with the field's hosted model, so one `embed` clause naming that field goes out.
+    #[pg_test]
+    fn search_docs_embed_mode_sends_an_embed_clause() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_search");
+        env.docs.set_search_matches(&[("1", 0.73)]);
+        fts_search_rows(&fts_search_args(
+            &env.table,
+            "find text by meaning",
+            "mode => 'embed'",
+        ));
+        let request = fts_last_search(&env.docs);
+        assert_eq!(
+            request["score_by"],
+            json!([{"type": "embed", "fields": ["body"], "query": "find text by meaning"}]),
+            "request = {request}"
+        );
+    }
+
+    /// Semantic search needs the hosted model, so `engine => 'local'` refuses `mode => 'embed'`
+    /// and points at remote, making no call.
+    #[pg_test]
+    fn search_docs_embed_mode_is_refused_on_the_local_engine() {
+        let env = FtsEnv::tracked_embed("fts_t21_embed_local");
+        let sql = format!(
+            "SELECT * FROM {FTS_SEARCH}({})",
+            fts_search_args(
+                &env.table,
+                "find text by meaning",
+                "mode => 'embed', engine => 'local'",
+            )
+        );
+        let error = fts_sql_error(&sql);
+        fts_assert_error(&error, "0A000", &["mode => 'embed'", "local engine"]);
+        assert!(
+            error
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("engine => 'remote'"),
+            "{error:?}"
+        );
+        assert_eq!(
+            env.docs.count(Endpoint::Search),
+            0,
+            "no remote call is made"
+        );
     }
 
     /// `mode => 'query_string'` sends the Lucene text unchanged; mixing it with a vector
@@ -16866,6 +17148,34 @@ mod tests {
         assert_eq!(fts_lane_failures("fts_m1_systemic"), 1);
         let error = fts_queue("fts_m1_systemic")[0]["last_error"].to_string();
         assert!(error.contains("100 documents in a row"), "{error}");
+    }
+
+    /// A row with no text to embed read fine, so ten unreadable rows next to it are dead letters,
+    /// not a step in which nothing reads.
+    #[pg_test]
+    fn doc_drain_counts_rows_with_no_text_to_embed_as_read() {
+        let (_backend, docs) = fts_mock();
+        let t = "fts_m1_blank";
+        fts_run(&format!(
+            "CREATE TABLE {t} (id bigint PRIMARY KEY, body text, price numeric)"
+        ));
+        fts_run(&fts_track_sql(
+            t,
+            "text_columns => '{\"body\": {\"embed\": {\"model\": \"gemini-embedding-2\"}}}'::jsonb, \
+             metadata_columns => ARRAY['price'], index_name => 'fts-m1-blank'",
+        ));
+        fts_drain(t);
+        fts_run(&format!(
+            "INSERT INTO {t} SELECT i, CASE WHEN i <= 10 THEN 'row ' || i END, \
+             CASE WHEN i <= 10 THEN 1e400 ELSE i END FROM generate_series(1, 15) i"
+        ));
+
+        fts_worker_round();
+
+        let poison: Vec<String> = (1..=10).map(|id: i64| id.to_string()).collect();
+        assert_eq!(fts_dead_letter_ids(t), poison);
+        assert!(docs.remote_ids(&fts_namespace(t)).is_empty());
+        assert_eq!(fts_lane_failures(t), 0);
     }
 
     /// A poison row on a backfill page is dead-lettered like a live one, the cursor moves past it

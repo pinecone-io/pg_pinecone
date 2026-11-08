@@ -2866,6 +2866,33 @@ async fn create_doc_index_401_maps_to_auth_error() {
     assert!(matches!(result, Err(Error::Auth)), "got {result:?}");
 }
 
+/// 403 is a plan or quota refusal, not bad credentials (401) and not a bad schema (400).
+#[tokio::test]
+async fn create_doc_index_403_maps_to_api_error_with_message() {
+    let cp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/indexes"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {"code": "FORBIDDEN", "message": "Request failed. You've reached the max serverless indexes allowed in project"},
+            "status": 403
+        })))
+        .expect(1)
+        .mount(&cp)
+        .await;
+
+    let client = Client::new(config(cp.uri(), "key"));
+    let result =
+        create_doc_index_blocking(Arc::new(client), create_doc_index_request("articles")).await;
+
+    match result {
+        Err(Error::Api { status, message }) => {
+            assert_eq!(status, 403);
+            assert!(message.contains("max serverless indexes"), "{message}");
+        }
+        other => panic!("expected Api 403, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn create_doc_index_missing_api_key_fails_without_any_http_call() {
     let cp = MockServer::start().await;
@@ -6824,6 +6851,75 @@ async fn upsert_docs_403_naming_the_namespace_limit_is_a_refusal_not_an_auth_fai
                 "{message}"
             );
         }
+        other => panic!("expected the refusal with its message, got {other:?}"),
+    }
+}
+
+// ---- 403 that names the plan ----
+
+const PLAN_REFUSAL: &str = "Model 'gemini-embedding-2', which field 'body' declares for 'embed', is \
+    not available on your plan, so no documents in this request were written. Upgrade your plan, \
+    or use an index whose schema names a model your plan includes.";
+
+#[tokio::test]
+async fn upsert_docs_403_naming_the_plan_is_a_refusal_not_an_auth_failure() {
+    let dp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/namespaces/__default__/documents/upsert"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "status": 403,
+            "error": {"code": "FORBIDDEN", "message": PLAN_REFUSAL}
+        })))
+        .mount(&dp)
+        .await;
+    let cp = MockServer::start().await;
+    mount_host(&cp, "articles", &dp.uri()).await;
+
+    let client = Client::new(config(cp.uri(), "key"));
+    let result = upsert_docs_blocking(Arc::new(client), one_doc_upsert("articles")).await;
+
+    match result {
+        Err(Error::Api {
+            status: 403,
+            message,
+        }) => assert!(message.contains("not available on your plan"), "{message}"),
+        other => panic!("expected the refusal with its message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn upsert_vectors_403_naming_the_plan_is_a_refusal_not_an_auth_failure() {
+    match upsert_after_403(PLAN_REFUSAL).await {
+        Err(Error::Api {
+            status: 403,
+            message,
+        }) => assert!(message.contains("not available on your plan"), "{message}"),
+        other => panic!("expected the refusal with its message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn search_docs_403_naming_the_plan_is_a_refusal_not_an_auth_failure() {
+    let dp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/namespaces/__default__/documents/search"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "status": 403,
+            "error": {"code": "FORBIDDEN", "message": PLAN_REFUSAL}
+        })))
+        .mount(&dp)
+        .await;
+    let cp = MockServer::start().await;
+    mount_host(&cp, "articles", &dp.uri()).await;
+
+    let client = Client::new(config(cp.uri(), "key"));
+    let result = search_docs_blocking(Arc::new(client), search_docs_request("articles")).await;
+
+    match result {
+        Err(Error::Api {
+            status: 403,
+            message,
+        }) => assert!(message.contains("not available on your plan"), "{message}"),
         other => panic!("expected the refusal with its message, got {other:?}"),
     }
 }
