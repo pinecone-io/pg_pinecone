@@ -860,7 +860,7 @@ SELECT pinecone.track_docs('articles',
 
 -- rank by meaning (Pinecone embeds the query with the field's model):
 SELECT a.* FROM pinecone.search_docs('articles', 'databases for AI apps', mode => 'embed') s
-  JOIN articles a ON a.id = s.id ORDER BY s.rank;
+  JOIN articles a ON a.id = s.id::bigint ORDER BY s.rank;
 ```
 
 - **The `embed` object** is forwarded to Pinecone, which resolves and fixes the rest: `model`
@@ -877,7 +877,8 @@ SELECT a.* FROM pinecone.search_docs('articles', 'databases for AI apps', mode =
 - **One scoring type per request.** `mode => 'embed'` composes with `filter` and `must` (a semantic
   rank narrowed by a metadata or `$match_*` requirement, in one call), but semantic and BM25 scores
   are on different scales — to rank by both, run two searches and merge by rank.
-- **Models.** The default is `llama-text-embed-v2`. `gemini-embedding-2` (Google; dense; 128–3072
+- **Models.** `track_docs` requires `model`; the ad-hoc `create_doc_index` may omit it for
+  Pinecone's default, `llama-text-embed-v2`. `gemini-embedding-2` (Google; dense; 128–3072
   dims, default 3072; cosine; chooses a `task_type`) is **not** on the standalone `pinecone.embed`
   API — it exists only for integrated embedding here — and needs a Builder, Standard or Enterprise
   Pinecone plan; a plan or permission refusal surfaces Pinecone's own message. See the
@@ -1238,7 +1239,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 | `Pinecone refused N documents in a row — the index schema or the declaration has probably drifted: ...` / `... — untrack and re-track the table` (`status().last_error`; the queue parks after `pinecone.outbox_max_attempts` of them) | Pinecone refuses everything the worker sends (the index changed outside pg_pinecone, or an attached index does not match), or a declared column is gone. No dead letters are written; the rows stay queued. | Fix the index or the declaration (`untrack_docs`, then `track_docs`), then `pinecone.unpark_docs(tbl)` if the table stays tracked. |
 | `pinecone.untrack_docs` / `backfill_docs` / `unpark_docs` / `flush_docs` / `failed_docs` / `retry_failed_docs: ... is not tracked by pinecone.track_docs` / `must be owner of ...` | The table has no `doc_tables` row (42704), or the caller does not own a table the verb needs ownership of (42501). | `track_docs` first; run as the owner. |
 | `pinecone.track_docs: column "...": embed needs a non-empty "model" string` / `embed dimension must be ...` / `only one text column may set embed` / `embed and vector_column both use the index's single dense slot` | The `embed` option is malformed or conflicts (22023). | Give `embed` a `"model"`; set it on one text column only; drop `vector_column` for hosted embedding. |
-| `pinecone.track_docs: Pinecone rejected the request: ... not available on the Starter plan` | Creating the hosted-embedding index was refused (403) — e.g. `gemini-embedding-2` needs a Builder+ plan. The server's message is surfaced, not a generic auth error. | Upgrade the Pinecone plan, or choose a model your plan allows. |
+| `pinecone.track_docs: Pinecone rejected the derived schema for index "...": ... not available on the Starter plan` | Creating the hosted-embedding index was refused (403) — e.g. `gemini-embedding-2` needs a Builder+ plan. The server's message is surfaced, not a generic auth error; the HINT's "fix the declaration" does not apply. | Upgrade the Pinecone plan, or choose a model your plan allows. |
 | `pinecone.flush_docs: ... timed out` / `... is parked` (WARNINGs) | The queue did not drain in time, or is parked. | `pinecone.status()`; `failed_docs`; fix the cause. |
 | `pinecone.search_docs: ... is not tracked` | The table has no `doc_tables` row (SQLSTATE 42704). | `pinecone.track_docs(...)` first; `pinecone.search_doc_index(...)` searches an ad-hoc index. |
 | `pinecone.search_docs: ... is still backfilling: N of M rows delivered; results are partial` (NOTICE) | A remote search ran while the first backfill, or a `backfill_docs`, was still sending rows. Once per call; the local engine searches the heap and says nothing. | Wait for `status().docs_queue_state` to be `idle` and `docs_backfill_done = docs_backfill_total`. |

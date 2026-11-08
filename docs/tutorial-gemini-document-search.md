@@ -22,7 +22,7 @@ All of it from SQL, with Pinecone embedding your text server-side on every write
   not available on the Starter plan.
 
 ```sql
-SET pinecone.api_key = 'pcsk_your_key';   -- or store it once: see the runbook
+SELECT pinecone.set_api_key('pcsk_your_key');   -- stored: the background sync worker needs it
 ```
 
 ## Step 1 — a plain table
@@ -77,7 +77,7 @@ results back to your table like any other query:
 SELECT n.id, n.body, s.score
 FROM pinecone.search_docs('notes', 'finding information by concept instead of the exact words typed',
                           mode => 'embed') s
-JOIN notes n ON n.id = s.id
+JOIN notes n ON n.id = s.id::bigint
 ORDER BY s.rank;
 ```
 
@@ -100,7 +100,7 @@ The `body` column still has a full-text index, so `mode => 'text'` does classic 
 ```sql
 SELECT n.id, n.body, s.score
 FROM pinecone.search_docs('notes', 'relational database rows columns', mode => 'text') s
-JOIN notes n ON n.id = s.id
+JOIN notes n ON n.id = s.id::bigint
 ORDER BY s.rank;
 ```
 
@@ -124,7 +124,7 @@ SELECT n.id, n.body, s.score
 FROM pinecone.search_docs('notes', 'models that understand human language',
                           mode => 'embed',
                           filter => '{"category": {"$eq": "ml"}}') s
-JOIN notes n ON n.id = s.id
+JOIN notes n ON n.id = s.id::bigint
 ORDER BY s.rank;
 ```
 
@@ -135,7 +135,7 @@ ORDER BY s.rank;
   5 | Gemini is a family of large language and embedding models ...   | 0.701
 ```
 
-You can also narrow with a text requirement instead of metadata — `filter => '{"body":
+You can also narrow with a text requirement instead of metadata — `must => '{"body":
 {"$match_all": "search"}}'` keeps only rows containing *search*, still ranked by meaning. To rank by
 *both* keyword and meaning, run the two searches and merge by rank client-side.
 
