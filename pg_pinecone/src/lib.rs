@@ -11921,6 +11921,37 @@ mod tests {
         );
     }
 
+    /// A quota 403 (Pinecone overloads 403 for it) is not blamed on the declaration.
+    #[pg_test]
+    fn track_docs_quota_refusal_from_create_is_not_a_schema_error() {
+        let env = FtsEnv::untracked("fts_t21_quota");
+        env.docs.fail_always(
+            Endpoint::IndexCreate,
+            403,
+            "Request failed. You've reached the max serverless indexes allowed in project",
+        );
+        let sql = format!(
+            "SELECT {FTS_TRACK}({}, text_columns => '{{\"body\": {{}}}}'::jsonb, index_name => {})",
+            fts_rel(&env.table),
+            quote_literal(&env.index),
+        );
+        let error = fts_sql_error(&sql);
+        assert!(
+            error.message.contains("max serverless indexes"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("derived schema"), "{error:?}");
+        assert_ne!(error.sqlstate, "22023", "{error:?}");
+        assert!(
+            !error
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fix the declaration"),
+            "{error:?}"
+        );
+    }
+
     /// `mode => 'embed'` ranks by the embedding field with a text query; Pinecone embeds the query
     /// with the field's hosted model, so one `embed` clause naming that field goes out.
     #[pg_test]
