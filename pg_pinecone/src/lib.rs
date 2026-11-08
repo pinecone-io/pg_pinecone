@@ -17150,6 +17150,34 @@ mod tests {
         assert!(error.contains("100 documents in a row"), "{error}");
     }
 
+    /// A row with no text to embed read fine, so ten unreadable rows next to it are dead letters,
+    /// not a step in which nothing reads.
+    #[pg_test]
+    fn doc_drain_counts_rows_with_no_text_to_embed_as_read() {
+        let (_backend, docs) = fts_mock();
+        let t = "fts_m1_blank";
+        fts_run(&format!(
+            "CREATE TABLE {t} (id bigint PRIMARY KEY, body text, price numeric)"
+        ));
+        fts_run(&fts_track_sql(
+            t,
+            "text_columns => '{\"body\": {\"embed\": {\"model\": \"gemini-embedding-2\"}}}'::jsonb, \
+             metadata_columns => ARRAY['price'], index_name => 'fts-m1-blank'",
+        ));
+        fts_drain(t);
+        fts_run(&format!(
+            "INSERT INTO {t} SELECT i, CASE WHEN i <= 10 THEN 'row ' || i END, \
+             CASE WHEN i <= 10 THEN 1e400 ELSE i END FROM generate_series(1, 15) i"
+        ));
+
+        fts_worker_round();
+
+        let poison: Vec<String> = (1..=10).map(|id: i64| id.to_string()).collect();
+        assert_eq!(fts_dead_letter_ids(t), poison);
+        assert!(docs.remote_ids(&fts_namespace(t)).is_empty());
+        assert_eq!(fts_lane_failures(t), 0);
+    }
+
     /// A poison row on a backfill page is dead-lettered like a live one, the cursor moves past it
     /// and the job ends `ready`.
     #[pg_test]

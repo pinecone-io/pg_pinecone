@@ -1519,7 +1519,8 @@ impl Reading<String> for GroupReader<'_, '_> {
     }
 
     fn accept(&mut self, part: Read) {
-        self.sender.rows_read(part.docs.len() + part.rejected.len());
+        self.sender
+            .rows_read(part.docs.len() + part.rejected.len() + part.blank.len());
         self.read.absorb(part);
     }
 
