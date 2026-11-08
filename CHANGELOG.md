@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — 2026-11-08
+
+- Re-release of 0.12.0 under a fresh tag; the `v0.12.0` GitHub tag was burned by immutable releases.
+  No extension code changes since 0.12.0 (the fix was to the release workflow).
+
 ## 0.12.0 — 2026-11-08
 
 - **Hosted (integrated) embedding on the document API, including Google's `gemini-embedding-2`.**

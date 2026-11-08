@@ -20,6 +20,16 @@ class DeriveTest(unittest.TestCase):
     def test_versions_sort_numerically_and_a_released_or_later_tag_is_never_the_base(self):
         self.assertEqual(pb.derive(["v0.10.0", "v0.11.0", "v0.12.0"], "0.11.0"), "v0.10.0")
 
+    def test_a_tag_whose_release_was_burned_is_skipped(self):
+        tags = ["v0.10.0", "v0.11.0", "v0.12.0"]
+        self.assertEqual(pb.derive(tags, "0.12.1", {"v0.10.0", "v0.11.0"}), "v0.11.0")
+        self.assertEqual(pb.derive(tags, "0.12.1", {"v0.10.0", "v0.11.0", "v0.12.0"}), "v0.12.0")
+        self.assertEqual(pb.derive(tags, "0.12.1"), "v0.12.0")
+
+    def test_no_published_release_below_the_crate_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            pb.derive(["v0.10.0", "v0.11.0"], "0.12.1", set())
+
     def test_the_first_release_has_no_base_and_pinegres_tags_are_never_one(self):
         for tags in ([], ["v0.8.0"], ["v0.8.0", "v0.9.0", "v0.9.1"]):
             self.assertEqual(pb.derive(tags, "0.10.0"), "")

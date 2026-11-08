@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "pg_pinecone"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "pg_pinecone-client",
  "pgrx",
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "pg_pinecone-client"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "libc",
  "percent-encoding",
