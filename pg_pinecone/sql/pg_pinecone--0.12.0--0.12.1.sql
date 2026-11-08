@@ -1,0 +1,2 @@
+-- 0.12.0 -> 0.12.1: re-release of 0.12.0 under a fresh tag (the v0.12.0 GitHub tag
+-- was burned by immutable releases). No catalog change, nothing SQL-visible.
