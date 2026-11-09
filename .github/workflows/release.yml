@@ -246,8 +246,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        # Like the Docker tags: only a tag push becomes Latest, so a dispatch
-        # rebuild of an older tag doesn't take it over.
         run: gh release edit "$RELEASE_TAG" --draft=false --latest="${{ github.event_name == 'push' }}"
 
   # Unsigned Postgres.app build. Runs on a PR dry run too. No signing secrets:
