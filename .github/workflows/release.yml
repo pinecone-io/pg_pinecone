@@ -145,9 +145,9 @@ jobs:
         with:
           ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # One cache per Postgres major: pgrx-pg-sys builds differently on each.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: pg${{ matrix.pg }}
 
@@ -272,9 +272,9 @@ jobs:
             echo "::notice::$RELEASE_TAG has no packaging/postgresapp; skipping the Postgres.app package"
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: steps.present.outputs.present == 'true'
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.present.outputs.present == 'true'
         with:
           key: pg18-postgresapp

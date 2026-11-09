@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all -- --check
       # Workspace-wide clippy needs a pgrx environment ($PGRX_HOME) to compile
       # the extension crate; it runs in the pgrx-tests job. Only the pure-Rust
@@ -45,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test -p pg_pinecone-client
 
   pgrx-tests:
@@ -62,11 +62,11 @@ jobs:
         run: |
           grep -m1 'model name' /proc/cpuinfo
           grep -o -m1 avx512vpopcntdq /proc/cpuinfo || echo 'no avx512vpopcntdq'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy
       # One cache per Postgres major: pgrx-pg-sys builds differently on each.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: pg${{ matrix.pg }}
 
@@ -135,9 +135,9 @@ jobs:
       - name: Tool tests
         run: python3 -m unittest discover -s scripts/upgrade/tests -v
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: env.UPGRADE_BASES != ''
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: env.UPGRADE_BASES != ''
         with:
           key: pg${{ matrix.pg }}
