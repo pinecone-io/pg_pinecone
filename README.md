@@ -68,6 +68,15 @@ SELECT id FROM items ORDER BY embedding <=> '[1,2,4]' LIMIT 2;
 For a full walkthrough on a sample table, including semantic search with embeddings, see the
 [quickstart in the pg_pinecone docs][quickstart].
 
+## Deploy
+
+One-click Postgres 18 with pg_pinecone already installed:
+
+- **[Railway](https://railway.com/deploy/pg-pinecone)**: a database and a connection URL.
+- **[Render](https://render.com/deploy?repo=https://github.com/pinecone-io/pg_pinecone_render)**:
+  a private service. Other services in the same workspace and region connect over the private
+  network.
+
 ## Build from source
 
 pg_pinecone is built with [pgrx](https://github.com/pgcentralfoundation/pgrx). You need a Rust
