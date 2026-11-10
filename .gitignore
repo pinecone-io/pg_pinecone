@@ -4,3 +4,6 @@
 *.dylib
 *.dll
 __pycache__/
+# `make pgxn-zip` writes these from META.json.in and Cargo.toml.
+/META.json
+/pg_pinecone-*.zip
