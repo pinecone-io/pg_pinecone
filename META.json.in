@@ -1,0 +1,53 @@
+{
+  "name": "pg_pinecone",
+  "abstract": "Pinecone vector search inside PostgreSQL",
+  "description": "pg_pinecone brings Pinecone vector search into PostgreSQL. Index a vector column with the native engine, pgvector, or a remote Pinecone serverless index, and keep a Pinecone full-text index in sync with a table.",
+  "version": "@CARGO_VERSION@",
+  "maintainer": [
+    "Pinecone Engineering <eng_admin@pinecone.io>"
+  ],
+  "license": "apache_2_0",
+  "release_status": "stable",
+  "provides": {
+    "pg_pinecone": {
+      "abstract": "Pinecone vector search inside PostgreSQL",
+      "file": "pg_pinecone/src/lib.rs",
+      "docfile": "README.md",
+      "version": "@CARGO_VERSION@"
+    }
+  },
+  "prereqs": {
+    "runtime": {
+      "requires": {
+        "PostgreSQL": ">= 17.0.0, < 19.0.0",
+        "vector": 0
+      },
+      "recommends": {
+        "vector": "0.8.6"
+      }
+    }
+  },
+  "resources": {
+    "homepage": "https://docs.pinecone.io/guides/pg-pinecone/overview",
+    "bugtracker": {
+      "web": "https://github.com/pinecone-io/pg_pinecone/issues"
+    },
+    "repository": {
+      "url": "https://github.com/pinecone-io/pg_pinecone.git",
+      "web": "https://github.com/pinecone-io/pg_pinecone",
+      "type": "git"
+    }
+  },
+  "generated_by": "Makefile",
+  "meta-spec": {
+    "version": "1.0.0",
+    "url": "https://pgxn.org/meta/spec.txt"
+  },
+  "tags": [
+    "vector-search",
+    "pgvector",
+    "pinecone",
+    "pgrx",
+    "rust"
+  ]
+}

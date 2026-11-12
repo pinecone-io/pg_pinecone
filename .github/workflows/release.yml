@@ -8,10 +8,14 @@ name: Release
 # assets already attached to that release unless `overwrite` is set (a re-run of a tag push's own
 # run replaces its earlier upload). postgresapp-sign also attaches
 # pg_pinecone-pg18-<version>.pkg; a notarization failure does not block the tarball upload.
+# pgxn-release uploads the source zip to PGXN. PGXN will not replace a version, so a
+# repeat of the same tag leaves the existing PGXN release in place. A missing
+# credential or a PGXN failure does not block the tarball upload.
 #
-# Dry run: a PR touching this file, the smoke script, or packaging/postgresapp
-# also runs the full six-leg build matrix (same jobs, same matrix) and the unsigned
-# Postgres.app build, but skips create-release/upload/publish/postgresapp-sign
+# Dry run: a PR touching this file, the smoke script, packaging/postgresapp, or the
+# PGXN packaging also runs the full six-leg build matrix (same jobs, same matrix),
+# the unsigned Postgres.app build, and `make pgxn-zip`, but skips
+# create-release/upload/publish/postgresapp-sign/pgxn-release
 # — it never touches a real release. This exists because v0.5.0 shipped a
 # release.yml change (per-arch RUSTFLAGS) that broke both arm64 legs, and the
 # matrix only ever builds at tag time, so nothing caught it pre-tag. Now editing
@@ -20,12 +24,13 @@ name: Release
 # The build runs PR-controlled code (build scripts, proc-macros, the smoke script), so it gets
 # a read-only token that is not persisted in .git/config. Only create-release, upload, and
 # postgresapp-sign hold `contents: write`. None of them run on a PR. postgresapp-sign does run
-# packaging scripts, but only on a tag or a dispatch.
+# packaging scripts, but only on a tag or a dispatch. pgxn-release uploads to PGXN on a tag
+# or a dispatch; it does not run on a PR, and its password lives on the `pgxn` environment.
 on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['.github/workflows/release.yml', 'scripts/release-smoke.sh', 'Dockerfile', '.dockerignore', 'packaging/postgresapp/**']
+    paths: ['.github/workflows/release.yml', 'scripts/release-smoke.sh', 'Dockerfile', '.dockerignore', 'packaging/postgresapp/**', 'Makefile', 'META.json.in', '.gitattributes']
   workflow_dispatch:
     inputs:
       tag:
@@ -234,10 +239,11 @@ jobs:
 
   # Flips the draft live once the tarballs are up (and the Postgres.app package,
   # when the sign job produced one). The tarball upload must have succeeded; the
-  # signed package is best-effort, so a skipped or failed sign job still ships.
+  # signed package and the PGXN upload are best-effort, so a skipped or failed
+  # sign or PGXN job still ships.
   publish:
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.upload.result == 'success' }}
-    needs: [upload, postgresapp-sign]
+    needs: [upload, postgresapp-sign, pgxn-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -438,6 +444,128 @@ jobs:
           fi
           # bash 3.2 on macOS: an empty array is unbound under set -u.
           gh release upload "$RELEASE_TAG" "$pkg" ${flags[@]+"${flags[@]}"}
+
+  # Source zip PGXN indexes. Runs on a PR dry run too: `make pgxn-zip` does not
+  # compile, and it does not upload. A tag older than this packaging skips it.
+  pgxn-pack:
+    name: package (pgxn)
+    needs: create-release
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.present.outputs.present }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
+          persist-credentials: false
+      - id: present
+        run: |
+          if [ -f Makefile ] && [ -f META.json.in ] && [ -f .gitattributes ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$RELEASE_TAG has no PGXN packaging; skipping the PGXN zip"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pack the PGXN zip
+        if: steps.present.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
+          make pgxn-zip
+          zipfile="pg_pinecone-${version}.zip"
+          test -f "$zipfile"
+          list=$(unzip -Z1 "$zipfile")
+          printf '%s\n' "$list" | grep -qx "pg_pinecone-${version}/Makefile"
+          printf '%s\n' "$list" | grep -qx "pg_pinecone-${version}/META.json"
+          printf '%s\n' "$list" | grep -qx "pg_pinecone-${version}/pg_pinecone/src/lib.rs"
+          if printf '%s\n' "$list" | grep -q 'META.json.in$'; then
+            echo "META.json.in must stay out of the PGXN zip" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        if: steps.present.outputs.present == 'true'
+        with:
+          name: pgxn-zip
+          path: pg_pinecone-*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # Uploads the zip to PGXN. Does not gate `publish`: the GitHub tarballs still
+  # ship if this is skipped or fails. Re-run the failed job to retry; that does
+  # not pass through create-release again. PGXN refuses a repeated version, so
+  # a second run of the same tag succeeds and leaves the existing release.
+  pgxn-release:
+    name: release (pgxn)
+    needs: [create-release, pgxn-pack]
+    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.pgxn-pack.result == 'success' && needs.pgxn-pack.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    environment: pgxn
+    steps:
+      # Until the environment holds the PGXN login, skip with a warning
+      # instead of failing every release run.
+      - id: secrets
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: |
+          missing=()
+          for name in PGXN_USERNAME PGXN_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::pgxn environment is missing ${missing[*]}; no PGXN release for $RELEASE_TAG"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v8
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          name: pgxn-zip
+          path: dist
+
+      - name: Upload to PGXN
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          zipfile=$(find dist -type f -name 'pg_pinecone-*.zip')
+          test -f "$zipfile"
+          body=$(mktemp)
+          status=$(curl --silent --show-error \
+            --user "${PGXN_USERNAME}:${PGXN_PASSWORD}" \
+            -F 'submit=Release It!' \
+            -F "archive=@${zipfile}" \
+            -H 'X-Requested-With: XMLHttpRequest' \
+            --output "$body" --write-out '%{http_code}' \
+            https://manager.pgxn.org/upload)
+          echo "PGXN upload HTTP ${status}"
+          cat "$body"
+          # A form POST succeeds with 303 See Other. The XHR header usually
+          # yields 200 instead. 409 is the documented conflict for a version
+          # that is already published.
+          case "$status" in
+            2??|303)
+              echo "PGXN upload succeeded (HTTP ${status})"
+              exit 0
+              ;;
+            409)
+              echo "::warning::PGXN already has this version; leaving the existing release in place"
+              exit 0
+              ;;
+            *)
+              if grep -q 'not greater than previous' "$body"; then
+                echo "::warning::PGXN already has this version; leaving the existing release in place"
+                exit 0
+              fi
+              echo "::error::PGXN release failed (HTTP ${status})"
+              exit 1
+              ;;
+          esac
 
   # Build the Docker image from source (no push) so a PR editing the Dockerfile
   # or this workflow proves it still builds before merge. One representative leg.
