@@ -3,6 +3,8 @@
 # `pgxn install` runs `make all`, then `make install` (under sudo when the
 # Postgres library directory is not writable). `all` compiles with cargo-pgrx
 # from pg_pinecone/, so Cargo reads pg_pinecone/.cargo/config.toml.
+# PGRX_PG_CONFIG_PATH points that build at PG_CONFIG, so it does not need
+# `cargo pgrx init`.
 # `install` only copies the packaged files, so it does not need Rust.
 #
 #   make install-pgrx     # once: cargo-pgrx matching pg_pinecone/Cargo.toml
@@ -36,7 +38,7 @@ package:
 	command -v cargo >/dev/null 2>&1 || { printf '%s\n' "cargo is required to build pg_pinecone" >&2; exit 1; }; \
 	cargo pgrx --version >/dev/null 2>&1 || { printf '%s\n' "cargo-pgrx $(PGRX_VERSION) is required; run 'make install-pgrx'" >&2; exit 1; }; \
 	rm -rf "$(STAGE)"; \
-	cd pg_pinecone && cargo --locked pgrx package --pg-config "$(PG_CONFIG)" --out-dir "$(STAGE)"
+	cd pg_pinecone && PGRX_PG_CONFIG_PATH="$(PG_CONFIG)" cargo --locked pgrx package --pg-config "$(PG_CONFIG)" --out-dir "$(STAGE)"
 
 install:
 	set -eu; \
@@ -75,14 +77,15 @@ META.json: META.json.in pg_pinecone/Cargo.toml
 	sed 's/@CARGO_VERSION@/$(DISTVERSION)/g' META.json.in > META.json
 	! grep -q '@CARGO_VERSION@' META.json
 
-# git archive reads HEAD. Refuse to pack uncommitted packaging, or the zip
-# would not contain this Makefile and `pgxn install` could not build it.
+# git archive reads HEAD. META.json's version is taken from the working tree,
+# so that tree's Cargo.toml has to match HEAD or the zip version will not match
+# the sources inside it. PGXN rejects a second upload of the same version.
 pgxn-zip: META.json
 	@git cat-file -e HEAD:Makefile >/dev/null 2>&1 && \
 	 git cat-file -e HEAD:META.json.in >/dev/null 2>&1 && \
 	 git cat-file -e HEAD:.gitattributes >/dev/null 2>&1 && \
-	 git diff --quiet HEAD -- Makefile META.json.in .gitattributes || { \
-	  printf '%s\n' "commit Makefile, META.json.in, and .gitattributes, then re-run make pgxn-zip" >&2; \
+	 git diff --quiet HEAD -- Makefile META.json.in .gitattributes pg_pinecone/Cargo.toml || { \
+	  printf '%s\n' "commit Makefile, META.json.in, .gitattributes, and pg_pinecone/Cargo.toml, then re-run make pgxn-zip" >&2; \
 	  exit 1; \
 	}
 	rm -f $(DISTNAME)-$(DISTVERSION).zip

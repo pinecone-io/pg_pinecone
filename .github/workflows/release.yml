@@ -545,15 +545,27 @@ jobs:
             https://manager.pgxn.org/upload)
           echo "PGXN upload HTTP ${status}"
           cat "$body"
-          if [ "$status" = 200 ]; then
-            exit 0
-          fi
-          if grep -q 'not greater than previous' "$body"; then
-            echo "::warning::PGXN already has this version; leaving the existing release in place"
-            exit 0
-          fi
-          echo "::error::PGXN release failed (HTTP ${status})"
-          exit 1
+          # A form POST succeeds with 303 See Other. The XHR header usually
+          # yields 200 instead. 409 is the documented conflict for a version
+          # that is already published.
+          case "$status" in
+            2??|303)
+              echo "PGXN upload succeeded (HTTP ${status})"
+              exit 0
+              ;;
+            409)
+              echo "::warning::PGXN already has this version; leaving the existing release in place"
+              exit 0
+              ;;
+            *)
+              if grep -q 'not greater than previous' "$body"; then
+                echo "::warning::PGXN already has this version; leaving the existing release in place"
+                exit 0
+              fi
+              echo "::error::PGXN release failed (HTTP ${status})"
+              exit 1
+              ;;
+          esac
 
   # Build the Docker image from source (no push) so a PR editing the Dockerfile
   # or this workflow proves it still builds before merge. One representative leg.
