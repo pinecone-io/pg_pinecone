@@ -1,0 +1,35 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    # serde_cbor (unmaintained, no fix) comes in through pgrx.
+    "RUSTSEC-2021-0127",
+]
+
+[licenses]
+# Permissive only. r-efi is "MIT OR Apache-2.0 OR LGPL-2.1-or-later"; we take MIT.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace path deps carry no version (crates are publish = false).
+allow-wildcard-paths = true

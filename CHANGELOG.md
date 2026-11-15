@@ -8,6 +8,14 @@
   network failure, a refused key and a plan refusal are told apart), the worker, the outbox and failed
   partitions. `doctor(remote => false)` makes no request. New function, so the `0.12.1`→`0.13.0` upgrade
   script creates it.
+- **The control-plane URL must be `https://`** (plain `http://` only to `localhost`, `127.0.0.0/8` or
+  `::1`), so the API key is never sent in cleartext. `pinecone.set_api_key` and
+  `SET pinecone.control_plane_url` refuse anything else, data-plane hosts get the same check, and the
+  client no longer follows redirects (they would carry the `Api-Key` header to wherever they pointed).
+  **Upgrade note:** a key stored with a non-loopback `http://` URL stops working as soon as the server
+  restarts on the new library, before `ALTER EXTENSION UPDATE`: remote calls fail and the outbox parks.
+  Re-run `pinecone.set_api_key('<key>', 'https://api.pinecone.io')`, then `pinecone.outbox_retry(tbl)`.
+  No catalog change.
 
 ## 0.12.1 — 2026-11-08
 

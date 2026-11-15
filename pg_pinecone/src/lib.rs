@@ -138,14 +138,20 @@ pub extern "C-unwind" fn _PG_init() {
         GucFlags::default(),
     );
 
-    GucRegistry::define_string_guc(
-        c"pinecone.control_plane_url",
-        c"Base URL of the Pinecone control plane.",
-        c"",
-        &CONTROL_PLANE_URL,
-        GucContext::Userset,
-        GucFlags::default(),
-    );
+    // SAFETY: `check_control_plane_url` is `#[pg_guard]`-wrapped, like `check_source_tag`.
+    unsafe {
+        GucRegistry::define_string_guc_with_hooks(
+            c"pinecone.control_plane_url",
+            c"Base URL of the Pinecone control plane; https, or http on loopback only.",
+            c"",
+            &CONTROL_PLANE_URL,
+            GucContext::Userset,
+            GucFlags::default(),
+            Some(backend::check_control_plane_url),
+            None,
+            None,
+        );
+    }
 
     GucRegistry::define_int_guc(
         c"pinecone.timeout_ms",
@@ -2040,6 +2046,69 @@ mod tests {
         .expect("embedding is NOT NULL");
 
         assert_eq!(embedding, vec![0.4, 0.5]);
+    }
+
+    #[pg_test]
+    fn set_api_key_rejects_non_loopback_http() {
+        let outcome: Result<(), String> = PgTryBuilder::new(|| {
+            Spi::run("SELECT pinecone.set_api_key('k', 'http://api.pinecone.io')")
+                .expect("statement should raise a Postgres ERROR, not an SpiError");
+            Ok(())
+        })
+        .catch_others(|caught| Err(error_message(caught)))
+        .execute();
+        let message = outcome.expect_err("cleartext non-loopback URL must be refused");
+        assert!(message.contains("loopback"), "message = {message}");
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM pinecone.secret").expect("count"),
+            Some(0),
+            "nothing may be stored"
+        );
+    }
+
+    #[pg_test]
+    fn set_api_key_accepts_https_and_loopback_http() {
+        Spi::run("SELECT pinecone.set_api_key('k', 'https://api.pinecone.io')")
+            .expect("https accepted");
+        Spi::run("SELECT pinecone.set_api_key('k', 'http://127.0.0.1:5080')")
+            .expect("loopback http accepted");
+    }
+
+    #[pg_test]
+    fn control_plane_url_guc_rejects_non_loopback_http() {
+        let outcome: Result<(), String> = PgTryBuilder::new(|| {
+            Spi::run("SET pinecone.control_plane_url = 'http://example.com'")
+                .expect("statement should raise a Postgres ERROR, not an SpiError");
+            Ok(())
+        })
+        .catch_others(|caught| Err(error_message(caught)))
+        .execute();
+        let message = outcome.expect_err("cleartext non-loopback URL must be refused");
+        assert!(message.contains("loopback"), "message = {message}");
+        Spi::run("SET pinecone.control_plane_url = 'http://localhost:1234'")
+            .expect("loopback http accepted");
+    }
+
+    #[pg_test]
+    fn a_stored_cleartext_url_from_an_older_release_is_refused_at_use() {
+        Spi::run(
+            "INSERT INTO pinecone.secret (id, api_key, control_plane_url) \
+             VALUES (true, 'k', 'http://example.com')",
+        )
+        .expect("insert a pre-upgrade row");
+        let outcome: Result<(), String> = PgTryBuilder::new(|| {
+            Spi::run("SELECT pinecone.embed('hello')")
+                .expect("statement should raise a Postgres ERROR, not an SpiError");
+            Ok(())
+        })
+        .catch_others(|caught| Err(error_message(caught)))
+        .execute();
+        let message = outcome.expect_err("cleartext stored URL must be refused");
+        assert!(
+            message.contains("insecure connection"),
+            "message = {message}"
+        );
+        assert!(message.contains("set_api_key"), "message = {message}");
     }
 
     #[pg_test]
@@ -4173,7 +4242,7 @@ mod tests {
             ],
         )
         .expect("set_api_key");
-        Spi::run("SET pinecone.control_plane_url = 'http://pg_pinecone-test.invalid'")
+        Spi::run("SET pinecone.control_plane_url = 'https://pg_pinecone-test.invalid'")
             .expect("SET pinecone.control_plane_url to an unrelated, unresolvable address");
 
         Spi::run("SELECT pinecone.promote('promote_secret_key', sync_mode => 'sync')")
@@ -4211,7 +4280,7 @@ mod tests {
             ],
         )
         .expect("set_api_key");
-        Spi::run("SET pinecone.control_plane_url = 'http://pg_pinecone-test.invalid'")
+        Spi::run("SET pinecone.control_plane_url = 'https://pg_pinecone-test.invalid'")
             .expect("SET pinecone.control_plane_url to an unrelated, unresolvable address");
 
         let embedding = Spi::get_one::<Vec<f32>>("SELECT pinecone.embed('hello')")
@@ -21477,7 +21546,7 @@ mod tests {
             "SELECT pinecone.set_api_key($1, $2)",
             &[
                 "fake-key".into(),
-                "http://pg_pinecone-test-invalid.example".into(),
+                "https://pg_pinecone-test-invalid.example".into(),
             ],
         )
         .expect("set_api_key");
@@ -21512,7 +21581,7 @@ mod tests {
             "SELECT pinecone.set_api_key($1, $2)",
             &[
                 "fake-key".into(),
-                "http://pg_pinecone-test-invalid.example".into(),
+                "https://pg_pinecone-test-invalid.example".into(),
             ],
         )
         .expect("set_api_key");

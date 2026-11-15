@@ -21,8 +21,17 @@ name: Release
 # matrix only ever builds at tag time, so nothing caught it pre-tag. Now editing
 # this file proves every platform x Postgres leg still builds before the edit merges.
 #
+# Every file asset gets a build-provenance attestation (`gh attestation verify`), the
+# source SBOM is attached and attested, and the Docker images are cosign-signed and attested
+# (see "Verifying releases" in the README). Attestations are made in jobs that run no PR code.
+#
+# A tag with a suffix (v0.13.0-rc.1) is a pre-release: it builds, signs, and attaches like a
+# release but is marked pre-release, never Latest, never moves pgNN/latest, and skips PGXN.
+# Use one to rehearse a release without burning its version. The suffix is ignored when
+# matching the crate version.
+#
 # The build runs PR-controlled code (build scripts, proc-macros, the smoke script), so it gets
-# a read-only token that is not persisted in .git/config. Only create-release, upload, and
+# a read-only token that is not persisted in .git/config. Only create-release, upload, publish, and
 # postgresapp-sign hold `contents: write`. None of them run on a PR. postgresapp-sign does run
 # packaging scripts, but only on a tag or a dispatch. pgxn-release uploads to PGXN on a tag
 # or a dispatch; it does not run on a PR, and its password lives on the `pgxn` environment.
@@ -51,6 +60,7 @@ env:
   # No real tag on a dry-run PR — "dry-run" is a safe, slash-free stand-in
   # (it only ever names a build artifact that never reaches a release).
   RELEASE_TAG: ${{ github.event.inputs.tag || (github.event_name == 'pull_request' && 'dry-run' || github.ref_name) }}
+  PRERELEASE: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
 
 jobs:
   # Guard the tag against Cargo.toml and ensure a release exists to upload
@@ -70,10 +80,17 @@ jobs:
       - name: Verify tag matches crate version
         run: |
           crate_version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
-          if [ "$RELEASE_TAG" != "v$crate_version" ]; then
+          if [ "${RELEASE_TAG%%-*}" != "v$crate_version" ]; then
             echo "Tag $RELEASE_TAG does not match pg_pinecone/Cargo.toml version $crate_version" >&2
             exit 1
           fi
+
+      # Attestations name the workflow ref that made them; keep that to main or a tag.
+      - name: Dispatch only from main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Dispatch this workflow from main, not $GITHUB_REF" >&2
+          exit 1
 
       # A draft, so the upload jobs can attach assets: immutable releases lock a
       # release on publish, which refused the post-publish upload before. The
@@ -84,7 +101,9 @@ jobs:
           OVERWRITE: ${{ inputs.overwrite }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --draft
+            flags=(--draft)
+            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes "${flags[@]}"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$OVERWRITE" != true ]; then
             attached=$(gh release view "$RELEASE_TAG" --json assets \
               --jq '[.assets[].name | select(startswith("pg_pinecone-"))] | join(", ")')
@@ -93,6 +112,32 @@ jobs:
               exit 1
             fi
           fi
+
+  # Source SBOM (Cargo.lock) for the release. Read-only; `upload` attaches and attests it.
+  sbom:
+    needs: create-release
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name != 'pull_request' && env.RELEASE_TAG || '' }}
+          persist-credentials: false
+      - name: Name the SBOM
+        run: echo "SBOM=pg_pinecone-${RELEASE_TAG#v}.cdx.json" >> "$GITHUB_ENV"
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          file: Cargo.lock
+          format: cyclonedx-json
+          output-file: ${{ env.SBOM }}
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pg_pinecone-sbom
+          path: ${{ env.SBOM }}
+          if-no-files-found: error
+          retention-days: 7
 
   package:
     name: package (pg${{ matrix.pg }}, ${{ matrix.os }}-${{ matrix.arch }})
@@ -208,20 +253,36 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Attaches the tarballs to the release once all six legs passed. Holds the write token, runs
-  # no repo code (no checkout), never runs on a PR.
+  # Attaches the tarballs and SBOM to the release once all six legs passed, with their
+  # attestations. Holds the write token, runs no repo code (no checkout), never runs on a PR.
   upload:
     if: github.event_name != 'pull_request'
-    needs: package
+    needs: [package, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           pattern: pg_pinecone-*
           path: dist
           merge-multiple: true
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Name the SBOM
+        run: echo "SBOM=dist/pg_pinecone-${RELEASE_TAG#v}.cdx.json" >> "$GITHUB_ENV"
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: ${{ env.SBOM }}
 
       - name: Upload to release
         env:
@@ -252,7 +313,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest="${{ github.event_name == 'push' }}"
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest="${{ github.event_name == 'push' && env.PRERELEASE != 'true' }}"
 
   # Unsigned Postgres.app build. Runs on a PR dry run too. No signing secrets:
   # the signed package is a separate job so a pull request cannot read them.
@@ -352,6 +413,8 @@ jobs:
     environment: postgresapp-signing
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       # Until the environment holds the Apple secrets, skip with a warning
       # instead of failing every release run.
@@ -429,15 +492,31 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: packaging/postgresapp/build.zsh
 
+      - name: Locate the package
+        if: steps.secrets.outputs.ready == 'true'
+        id: pkg
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
+          pkg="target/pg_pinecone-pg18-${version}.pkg"
+          test -f "$pkg"
+          echo "path=$pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        if: steps.secrets.outputs.ready == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.pkg.outputs.path }}
+
       - name: Upload package to the release
         if: steps.secrets.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           OVERWRITE: ${{ inputs.overwrite }}
+          PKG: ${{ steps.pkg.outputs.path }}
         run: |
           set -euo pipefail
-          version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
-          pkg="target/pg_pinecone-pg18-${version}.pkg"
+          pkg="$PKG"
           flags=()
           if [ "$GITHUB_EVENT_NAME" = push ] || [ "$OVERWRITE" = true ]; then
             flags+=(--clobber)
@@ -498,9 +577,13 @@ jobs:
   pgxn-release:
     name: release (pgxn)
     needs: [create-release, pgxn-pack]
-    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.pgxn-pack.result == 'success' && needs.pgxn-pack.outputs.present == 'true'
+    if: github.event_name != 'pull_request' && !contains(github.event.inputs.tag || github.ref_name, '-') && needs.create-release.result == 'success' && needs.pgxn-pack.result == 'success' && needs.pgxn-pack.outputs.present == 'true'
     runs-on: ubuntu-latest
     environment: pgxn
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       # Until the environment holds the PGXN login, skip with a warning
       # instead of failing every release run.
@@ -521,10 +604,15 @@ jobs:
           fi
 
       - uses: actions/download-artifact@v8
-        if: steps.secrets.outputs.ready == 'true'
         with:
           name: pgxn-zip
           path: dist
+
+      # The zip is only ever published on PGXN; attest it here, before the upload.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/pg_pinecone-*.zip
 
       - name: Upload to PGXN
         if: steps.secrets.outputs.ready == 'true'
@@ -602,6 +690,10 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -620,6 +712,18 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -638,6 +742,10 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: docker
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -658,9 +766,9 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           tags=(-t "${IMAGE}:${version}-pg${{ matrix.pg }}")
-          # Move pgNN/latest only on a tag push — a dispatch rebuild of an older
-          # tag must not retarget them and downgrade default pulls.
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
+          # Move pgNN/latest only on a release tag push — a dispatch rebuild of an older
+          # tag or a pre-release must not retarget them.
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PRERELEASE" != true ]; then
             tags+=(-t "${IMAGE}:pg${{ matrix.pg }}")
             [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
           fi
@@ -670,3 +778,22 @@ jobs:
           done
           docker buildx imagetools create "${tags[@]}" "${digests[@]}"
           docker buildx imagetools inspect "${IMAGE}:${version}-pg${{ matrix.pg }}"
+
+      # Sign and attest the multi-arch index, the digest users pull.
+      - id: digest
+        run: |
+          version="${RELEASE_TAG#v}"
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${version}-pg${{ matrix.pg }}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Sign image
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
