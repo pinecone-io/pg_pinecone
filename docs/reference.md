@@ -1109,9 +1109,9 @@ ORDER BY s.rank;
 | `shared_preload_libraries` | whether it names `pg_pinecone` | `warn`: it does not, or the role may not read the setting |
 | `pgvector` | `CREATE EXTENSION vector` in this database | `fail`: not installed |
 | `credentials` | which key this session uses: the `pinecone.api_key` setting, else the stored one. Never the key | `warn`: none, or one is stored but the role cannot read `pinecone.secret` |
-| `control_plane_url` | the URL that key goes to (a stored key goes to its stored URL) | `warn`: not `https://` |
-| `reachability` | one `GET /indexes` with that key, timed by `pinecone.timeout_ms` | `fail`: the detail starts `network:` (no answer), `auth:` (401) or `plan or permission:` (403); `warn`: `limit:` (429) or not checked (no usable key) |
-| `outbox` | queued writes of both lanes, the same counts as `status()` | `fail`: a queue is parked; `warn`: retrying with backoff, or the role cannot run `pinecone._outbox_stats` |
+| `control_plane_url` | the URL that key goes to (a stored key goes to its stored URL) | `fail`: not `https://` and not `http://` to loopback (a stored one: re-run `pinecone.set_api_key` with an `https://` URL); `warn`: `http://` to loopback. Userinfo is shown as `***` |
+| `reachability` | one `GET /indexes` with that key, timed by `pinecone.timeout_ms` | `fail`: the detail starts `network:` (no answer), `auth:` (401) or `plan or permission:` (403); `warn`: `limit:` (429) or not checked (no usable key, or a URL that fails `control_plane_url`: the key is not sent) |
+| `outbox` | queued writes of both lanes, the same counts as `status()` | `fail`: a queue is parked; `warn`: retrying with backoff, or the role sees a table but cannot run `pinecone._outbox_stats` or `pinecone._doc_outbox_stats` |
 | `failed_partitions` | partitions Pinecone refused for good | `fail`: any |
 | `worker` | the launcher | `fail`: not running with writes queued; `warn`: not running (`pinecone.worker_enabled` off, not preloaded, or down) |
 

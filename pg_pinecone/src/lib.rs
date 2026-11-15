@@ -3757,6 +3757,54 @@ mod tests {
     }
 
     #[pg_test]
+    fn doctor_fails_a_stored_cleartext_url_without_sending_the_key() {
+        create_extension_vector();
+        Spi::run("SET pinecone.api_key = ''").expect("clear the session key");
+        // Written directly: a stored URL that predates the https rule.
+        Spi::run(
+            "INSERT INTO pinecone.secret VALUES (true, 'k', 'http://pinecone.example') \
+             ON CONFLICT (id) DO UPDATE SET api_key = 'k', control_plane_url = 'http://pinecone.example'",
+        )
+        .expect("store a cleartext URL");
+
+        let rows = doctor_rows("");
+        let (status, detail, hint) = doctor_check(&rows, "control_plane_url");
+        assert_eq!(status, "fail", "{detail}");
+        assert!(hint.expect("hint").contains("pinecone.set_api_key"));
+        let (status, detail, _) = doctor_check(&rows, "reachability");
+        assert_eq!(status, "warn");
+        assert!(detail.starts_with("not checked"), "{detail}");
+    }
+
+    #[pg_test]
+    fn doctor_runs_for_a_role_that_cannot_read_the_stored_key() {
+        create_extension_vector();
+        Spi::run("SELECT pinecone.set_api_key('stored-key-xyz', 'https://stored-host.example')")
+            .expect("set_api_key");
+        let role = format!("pinecone_doctor_role_{}", std::process::id());
+        Spi::run(&format!("CREATE ROLE {role}")).expect("create role");
+        Spi::run(&format!("GRANT USAGE ON SCHEMA pinecone TO {role}")).expect("grant usage");
+
+        Spi::run(&format!("SET ROLE {role}")).expect("SET ROLE");
+        Spi::run("SET pinecone.api_key = ''").expect("clear the session key");
+        let rows = doctor_rows("");
+        Spi::run("RESET ROLE").expect("RESET ROLE");
+        Spi::run(&format!("DROP OWNED BY {role}")).expect("drop owned by role");
+        Spi::run(&format!("DROP ROLE {role}")).expect("drop role");
+
+        assert_eq!(doctor_check(&rows, "credentials").0, "warn");
+        assert_eq!(doctor_check(&rows, "reachability").0, "warn");
+        assert_eq!(doctor_check(&rows, "outbox").0, "ok");
+        assert!(
+            rows.iter().all(|row| {
+                let text = format!("{} {}", row.2, row.3.as_deref().unwrap_or(""));
+                !text.contains("stored-key-xyz") && !text.contains("stored-host")
+            }),
+            "{rows:?}"
+        );
+    }
+
+    #[pg_test]
     fn user_agent_reports_the_full_composed_string() {
         let expected = format!(
             "pg_pinecone-client-{}; lang=rust; pg={}; client={}; source_tag=pg_pinecone",

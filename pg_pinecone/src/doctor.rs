@@ -2,6 +2,8 @@
 //! never raises for something it can report; what the caller cannot see is a `warn`, not a `fail`.
 //! It reuses the probes `status()` is built from (queue stats, failed partitions, the launcher lock).
 
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 use pg_pinecone_client::Error as ClientError;
 use pgrx::{pg_sys, spi::Spi};
 
@@ -198,21 +200,84 @@ fn credential_check(source: &Source) -> DoctorRow {
 }
 
 fn url_check(source: &Source) -> DoctorRow {
-    let (url, origin) = match source.credentials() {
-        Some(creds) => (creds.control_plane_url.clone(), ""),
-        None => (
+    const NAME: &str = "control_plane_url";
+    const SET_GUC: &str = "SET pinecone.control_plane_url to an https:// URL (the default is https://api.pinecone.io)";
+    let (url, origin, hint) = match source {
+        Source::Session(creds) => (creds.control_plane_url.clone(), "", SET_GUC),
+        Source::Stored(creds) => (
+            creds.control_plane_url.clone(),
+            " (stored with the key)",
+            "re-run pinecone.set_api_key('<key>', 'https://api.pinecone.io') with an https:// URL",
+        ),
+        Source::Unreadable | Source::Missing => (
             guc_string(&CONTROL_PLANE_URL),
             " (session setting; the stored URL is not visible)",
+            SET_GUC,
         ),
     };
-    if url.to_ascii_lowercase().starts_with("https://") {
-        ok("control_plane_url", format!("{url}{origin}"))
+    let shown = redact(&url);
+    match url_kind(&url) {
+        UrlKind::Https => ok(NAME, format!("{shown}{origin}")),
+        UrlKind::LoopbackHttp => warn(
+            NAME,
+            format!("{shown}{origin} is plain http on loopback"),
+            "fine for a local mock; use https:// anywhere else",
+        ),
+        UrlKind::Insecure => fail(
+            NAME,
+            format!("{shown}{origin} is not https: the API key would travel unencrypted"),
+            hint,
+        ),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum UrlKind {
+    Https,
+    LoopbackHttp,
+    Insecure,
+}
+
+/// The policy of `pg_pinecone_client::require_secure_url` (PR #37); switch to it once both are merged.
+fn url_kind(url: &str) -> UrlKind {
+    if url
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return UrlKind::Insecure;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return UrlKind::Insecure;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map_or("", |(h, _)| h),
+        None => hostport.split(':').next().unwrap_or(""),
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+        || host.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback());
+    if host.is_empty() {
+        UrlKind::Insecure
+    } else if scheme.eq_ignore_ascii_case("https") {
+        UrlKind::Https
+    } else if scheme.eq_ignore_ascii_case("http") && loopback {
+        UrlKind::LoopbackHttp
     } else {
-        warn(
-            "control_plane_url",
-            format!("{url}{origin} is not https: the API key travels unencrypted"),
-            "use an https:// URL (the default is https://api.pinecone.io); plain http is for a local mock only",
-        )
+        UrlKind::Insecure
+    }
+}
+
+/// Doctor output gets pasted into tickets: drop any `user:password@` from a URL.
+fn redact(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}{}", &rest[end..]),
+        None => url.to_string(),
     }
 }
 
@@ -227,8 +292,15 @@ fn reachability(remote: bool, source: &Source) -> DoctorRow {
             "fix the credentials check first",
         );
     };
+    if url_kind(&creds.control_plane_url) == UrlKind::Insecure {
+        return warn(
+            "reachability",
+            "not checked: the key is only sent over https",
+            "fix the control_plane_url check first",
+        );
+    }
     let client = backend::client_for(creds.api_key.clone(), creds.control_plane_url.clone());
-    classify_probe(client.probe(), &creds.control_plane_url)
+    classify_probe(client.probe(), &redact(&creds.control_plane_url))
 }
 
 /// The detail's prefix (`network:`, `auth:`, `plan or permission:`) is what tells the causes apart.
@@ -276,7 +348,7 @@ fn classify_probe(result: Result<(), ClientError>, url: &str) -> DoctorRow {
         ),
         Err(ClientError::Transport { url, reason }) => fail(
             NAME,
-            format!("network: could not reach {url}: {reason}"),
+            format!("network: could not reach {}: {reason}", redact(&url)),
             "check pinecone.control_plane_url, DNS, firewall and proxy settings; remote => false skips this check",
         ),
         Err(other) => fail(NAME, other.to_string(), "see the runbook"),
@@ -293,8 +365,9 @@ fn clip(message: &str) -> String {
 
 #[derive(Default)]
 struct Queues {
-    /// No `EXECUTE` on `_outbox_stats`: `backlog` and `backoff` are unknown, `parked` is not.
-    blind: bool,
+    /// Stats functions this role cannot run for a lane it sees: that lane's `backlog` and `backoff`
+    /// are unknown, `parked` is not.
+    blind: Vec<&'static str>,
     backlog: i64,
     backoff: Vec<String>,
     parked: Vec<String>,
@@ -304,12 +377,18 @@ struct Queues {
 impl Queues {
     fn read() -> Self {
         let mut queues = Queues::default();
-        let stats_allowed = outbox::can_call_outbox_stats();
+        let tables = registry::list_for_reader();
+        let stats_allowed = tables.is_empty() || outbox::can_call_outbox_stats();
         let docs = docs_registry::list_visible();
-        let doc_stats_allowed = !docs.is_empty() && docs_outbox::can_call_doc_outbox_stats();
-        queues.blind = !stats_allowed;
+        let doc_stats_allowed = docs.is_empty() || docs_outbox::can_call_doc_outbox_stats();
+        if !stats_allowed {
+            queues.blind.push("pinecone._outbox_stats(oid)");
+        }
+        if !doc_stats_allowed {
+            queues.blind.push("pinecone._doc_outbox_stats(oid)");
+        }
 
-        for row in registry::list_for_reader() {
+        for row in tables {
             let name = table_label(row.relid);
             if row.queue_parked {
                 queues.parked.push(name.clone());
@@ -355,14 +434,8 @@ fn outbox_check(queues: &Queues) -> DoctorRow {
         return fail(
             "outbox",
             format!("queue parked: {}", queues.parked.join(", ")),
-            "pinecone.status() shows last_error; fix the cause, then pinecone.outbox_retry(tbl) (runbook: Parked queue)",
-        );
-    }
-    if queues.blind {
-        return warn(
-            "outbox",
-            "queue depth not visible: this role cannot run pinecone._outbox_stats",
-            "GRANT EXECUTE ON FUNCTION pinecone._outbox_stats(oid) TO this role",
+            "pinecone.status() shows last_error; fix the cause, then pinecone.outbox_retry(tbl), or \
+             pinecone.unpark_docs(tbl) for a (documents) queue (runbook: Parked queue)",
         );
     }
     if !queues.backoff.is_empty() {
@@ -374,6 +447,14 @@ fn outbox_check(queues: &Queues) -> DoctorRow {
                 queues.backoff.join(", ")
             ),
             "Pinecone is failing these writes; pinecone.status() shows last_error (runbook: Backlog monitoring)",
+        );
+    }
+    if !queues.blind.is_empty() {
+        let functions = queues.blind.join(", ");
+        return warn(
+            "outbox",
+            format!("queue depth not visible: this role cannot run {functions}"),
+            &format!("GRANT EXECUTE ON FUNCTION {functions} TO this role"),
         );
     }
     ok("outbox", format!("{} queued", queues.backlog))
@@ -487,19 +568,87 @@ mod tests {
     }
 
     #[test]
-    fn parked_beats_blind_beats_backoff() {
+    fn parked_beats_backoff_beats_blind() {
         let mut queues = Queues {
-            blind: true,
-            parked: vec!["public.t".into()],
+            blind: vec!["pinecone._doc_outbox_stats(oid)"],
+            parked: vec!["public.t (documents)".into()],
             backoff: vec!["public.u".into()],
             ..Queues::default()
         };
-        assert_eq!(status_of(&outbox_check(&queues)), "fail");
+        let parked = outbox_check(&queues);
+        assert_eq!(status_of(&parked), "fail");
+        assert!(parked.3.unwrap().contains("unpark_docs"));
         queues.parked.clear();
-        assert!(outbox_check(&queues).2.contains("not visible"));
-        queues.blind = false;
-        assert_eq!(status_of(&outbox_check(&queues)), "warn");
+        assert!(outbox_check(&queues).2.contains("backoff"));
         queues.backoff.clear();
+        let blind = outbox_check(&queues);
+        assert_eq!(status_of(&blind), "warn");
+        assert!(blind.2.contains("_doc_outbox_stats"), "{blind:?}");
+        queues.blind.clear();
         assert_eq!(status_of(&outbox_check(&queues)), "ok");
+    }
+
+    #[test]
+    fn only_https_or_loopback_http_carries_the_key() {
+        for url in [
+            "https://api.pinecone.io",
+            "HTTPS://api.pinecone.io/",
+            "https://user:pw@api.pinecone.io",
+        ] {
+            assert_eq!(url_kind(url), UrlKind::Https, "{url}");
+        }
+        for url in [
+            "http://localhost:5080",
+            "http://127.0.0.1:5555",
+            "http://[::1]:9000/path",
+        ] {
+            assert_eq!(url_kind(url), UrlKind::LoopbackHttp, "{url}");
+        }
+        for url in [
+            "http://api.pinecone.io",
+            "http://localhost.evil.com",
+            "http://127.0.0.1@evil.com",
+            "http://evil.com\\@127.0.0.1",
+            "ftp://localhost",
+            "api.pinecone.io",
+            "",
+        ] {
+            assert_eq!(url_kind(url), UrlKind::Insecure, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_cleartext_url_fails_with_the_fix_for_its_source() {
+        let creds = |url: &str| EffectiveCredentials {
+            api_key: "k".into(),
+            control_plane_url: url.into(),
+        };
+        let stored = url_check(&Source::Stored(creds("http://u:secret@pinecone.example")));
+        assert_eq!(status_of(&stored), "fail");
+        assert!(stored.3.as_deref().unwrap().contains("set_api_key"));
+        assert!(!stored.2.contains("secret"), "{stored:?}");
+        let session = url_check(&Source::Session(creds("http://pinecone.example")));
+        assert_eq!(status_of(&session), "fail");
+        assert!(
+            session
+                .3
+                .as_deref()
+                .unwrap()
+                .contains("SET pinecone.control_plane_url")
+        );
+        let mock = url_check(&Source::Session(creds("http://127.0.0.1:5080")));
+        assert_eq!(status_of(&mock), "warn");
+        let https = url_check(&Source::Stored(creds("https://api.pinecone.io")));
+        assert_eq!(status_of(&https), "ok");
+    }
+
+    #[test]
+    fn userinfo_is_redacted() {
+        assert_eq!(
+            redact("https://u:pw@host:1/p?q#f"),
+            "https://***@host:1/p?q#f"
+        );
+        assert_eq!(redact("https://host/a@b"), "https://host/a@b");
+        assert_eq!(redact("no scheme"), "no scheme");
     }
 }
