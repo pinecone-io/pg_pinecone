@@ -546,6 +546,8 @@ impl Client {
             .timeout_global(Some(cfg.timeout))
             .http_status_as_error(false)
             .user_agent(user_agent)
+            // A redirect would resend `Api-Key` to an unchecked, possibly http, URL.
+            .max_redirects(0)
             .build();
         let connector = DefaultConnector::default().chain(ResumeReads);
         Self {

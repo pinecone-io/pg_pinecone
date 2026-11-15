@@ -2067,6 +2067,28 @@ mod tests {
     }
 
     #[pg_test]
+    fn a_stored_cleartext_url_from_an_older_release_is_refused_at_use() {
+        Spi::run(
+            "INSERT INTO pinecone.secret (id, api_key, control_plane_url) \
+             VALUES (true, 'k', 'http://example.com')",
+        )
+        .expect("insert a pre-upgrade row");
+        let outcome: Result<(), String> = PgTryBuilder::new(|| {
+            Spi::run("SELECT pinecone.embed('hello')")
+                .expect("statement should raise a Postgres ERROR, not an SpiError");
+            Ok(())
+        })
+        .catch_others(|caught| Err(error_message(caught)))
+        .execute();
+        let message = outcome.expect_err("cleartext stored URL must be refused");
+        assert!(
+            message.contains("insecure connection"),
+            "message = {message}"
+        );
+        assert!(message.contains("set_api_key"), "message = {message}");
+    }
+
+    #[pg_test]
     fn embed_unset_api_key() {
         let outcome: Result<(), String> = PgTryBuilder::new(|| {
             Spi::run("SELECT pinecone.embed('hello')")

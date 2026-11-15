@@ -6953,3 +6953,23 @@ async fn cleartext_data_plane_host_is_refused() {
         .unwrap_err();
     assert!(matches!(err, Error::InsecureUrl { .. }), "{err:?}");
 }
+
+#[tokio::test]
+async fn a_redirect_is_not_followed_with_the_api_key() {
+    let control_plane = MockServer::start().await;
+    let elsewhere = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/indexes/docs"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/indexes/docs", elsewhere.uri())),
+        )
+        .mount(&control_plane)
+        .await;
+    let client = Client::new(config(control_plane.uri(), "key"));
+    let err = query_blocking(Arc::new(client), query("docs"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Api { status: 302, .. }), "{err:?}");
+    assert_eq!(elsewhere.received_requests().await.unwrap().len(), 0);
+}

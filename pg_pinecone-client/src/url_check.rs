@@ -103,4 +103,35 @@ mod tests {
             .to_string();
         assert!(!msg.contains("secret"), "{msg}");
     }
+
+    /// An accepted http URL must reach loopback by the parser ureq connects with, too.
+    #[test]
+    fn agrees_with_the_request_parser() {
+        for url in [
+            "http://[::1]evil.com/",
+            "http://[::1]@evil.com/",
+            "http://a@b@evil.com",
+            "http://127.0.0.1%2f@evil.com",
+            "http://127.0.0.1;evil.com",
+            "http://evil.com%00@localhost",
+            "http://@localhost",
+            "HTTP://localhost",
+            "http://[::ffff:127.0.0.1]",
+            "http://2130706433",
+            "http://0177.0.0.1",
+            "http://localhost.",
+        ] {
+            if require_secure_url(url).is_err() {
+                continue;
+            }
+            let Ok(uri) = url.parse::<ureq::http::Uri>() else {
+                continue;
+            };
+            let host = uri.host().unwrap_or("");
+            assert!(
+                matches!(host, "localhost" | "[::1]") || host.starts_with("127."),
+                "{url} -> {host}"
+            );
+        }
+    }
 }

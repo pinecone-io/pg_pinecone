@@ -360,6 +360,7 @@ pub(crate) fn fails_one_partition(err: &ClientError) -> bool {
                     other,
                     ClientError::MissingApiKey
                         | ClientError::Auth
+                        | ClientError::InsecureUrl { .. }
                         | ClientError::IndexNotFound { .. }
                         | ClientError::NamespaceNotFound { .. }
                 )
@@ -653,7 +654,7 @@ pub(crate) fn raise(err: ClientError) -> ! {
         }
         ClientError::InsecureUrl { reason } => error!(
             "pg_pinecone: refusing to send the API key over an insecure connection: {reason} — \
-             check pinecone.control_plane_url"
+             check pinecone.control_plane_url, or the URL pinecone.set_api_key stored"
         ),
         ClientError::Timeout { ms } => error!(
             "pg_pinecone: request timed out after {ms}ms — raise pinecone.timeout_ms if the index is \
@@ -819,6 +820,9 @@ mod tests {
             },
             ClientError::MissingApiKey,
             ClientError::Auth,
+            ClientError::InsecureUrl {
+                reason: "http".to_string(),
+            },
             ClientError::IndexNotFound {
                 index: "i".to_string(),
             },
