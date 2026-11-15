@@ -26,20 +26,8 @@ jobs:
       # client is linted here.
       - run: cargo clippy -p pg_pinecone-client --all-targets -- -D warnings
 
-      - name: Cache cargo-audit
-        id: cargo-audit-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-0.22.2-${{ runner.os }}
-
-      - name: Install cargo-audit
-        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
-      # serde_cbor 0.11.2 (RUSTSEC-2021-0127, unmaintained, no fix) comes in through pgrx: its warning
-      # is muted, any other is printed. Only a vulnerability fails the job.
-      - run: cargo audit --ignore RUSTSEC-2021-0127
+      # Advisories, licenses, sources and bans; policy lives in deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
 
   client-tests:
     runs-on: ubuntu-latest
