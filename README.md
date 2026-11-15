@@ -95,6 +95,26 @@ cargo pgrx install --release                  # builds and installs into that Po
 `CREATE EXTENSION vector; CREATE EXTENSION pg_pinecone;` as above. On x86_64 the build targets your
 own CPU, so it runs anywhere you build it. For running the tests, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Verifying releases
+
+Release tarballs, the source zip, the Postgres.app package, and the SBOM
+(`pg_pinecone-<version>.cdx.json`) carry GitHub build-provenance attestations. The Docker
+images are also signed with keyless cosign. Pin the signer to this repo's release workflows
+on `main` or a `v*` tag; a run from any other branch is not a release.
+
+```bash
+ID='^https://github\.com/pinecone-io/pg_pinecone/\.github/workflows/(release|docker-publish)\.yml@refs/(heads/main|tags/v.+)$'
+
+gh attestation verify pg_pinecone-<version>-pg18-linux-x86_64.tar.gz \
+  --repo pinecone-io/pg_pinecone --cert-identity-regex "$ID"
+gh attestation verify oci://pineconeteam/pg_pinecone:<version>-pg18 \
+  --repo pinecone-io/pg_pinecone --cert-identity-regex "$ID"
+
+cosign verify pineconeteam/pg_pinecone:<version>-pg18 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "$ID"
+```
+
 ## Documentation
 
 The [pg_pinecone docs][docs] on docs.pinecone.io cover installation, the storage engines,
