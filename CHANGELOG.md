@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.13.0)
+## 0.13.0 — 2026-11-16
 
 - **`pinecone.doctor()`: a one-call setup and health check.** One row per check (`check_name`, `status` of
   `ok`/`warn`/`fail`, `detail`, `hint`): library against catalog version, `shared_preload_libraries`, pgvector,
@@ -16,6 +16,13 @@
   restarts on the new library, before `ALTER EXTENSION UPDATE`: remote calls fail and the outbox parks.
   Re-run `pinecone.set_api_key('<key>', 'https://api.pinecone.io')`, then `pinecone.outbox_retry(tbl)`.
   No catalog change.
+- **Signed, attested releases.** Every tarball, the PGXN zip, the Postgres.app package and a CycloneDX
+  SBOM (`pg_pinecone-<version>.cdx.json`, attached to the release) carry GitHub build-provenance
+  attestations; the Docker images are also signed with keyless cosign. Verify with `gh attestation verify`
+  or `cosign verify`, pinning the signer to `main` or a `v*` tag: see "Verifying releases" in the README.
+- **On PGXN.** A `Makefile` and `META.json` let `pgxn install pg_pinecone` (or `make && make install`)
+  build from source against the `pg_config` on `PATH`; the release uploads the source zip.
+- CI polices dependency licenses, sources and advisories with `cargo-deny` (replacing `cargo audit`).
 
 ## 0.12.1 — 2026-11-08
 
