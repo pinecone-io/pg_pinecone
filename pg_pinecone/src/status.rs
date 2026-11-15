@@ -225,7 +225,11 @@ fn partition_columns(
 /// How many partitions of the vector lane are failed: `0` without a partition column, for a table
 /// that is not synced (a bare `demote` keeps the state) and for the document lane, which
 /// dead-letters per document.
-fn failed_partitions(relid: pg_sys::Oid, syncs: bool, vector: Option<&PartitionSpec>) -> i32 {
+pub(crate) fn failed_partitions(
+    relid: pg_sys::Oid,
+    syncs: bool,
+    vector: Option<&PartitionSpec>,
+) -> i32 {
     if !syncs || vector.is_none() {
         return 0;
     }
@@ -362,7 +366,7 @@ fn local_row_count(schema: &str, table: &str) -> i64 {
 /// `Spi::connect`/`get_by_name` rather than `Spi::get_three_with_args`:
 /// pgrx 0.19's `Spi` only goes up to 3 typed columns, and `_outbox_stats`
 /// now returns 4.
-fn outbox_stats(
+pub(crate) fn outbox_stats(
     relid: pg_sys::Oid,
     allowed: bool,
 ) -> (

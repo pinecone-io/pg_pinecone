@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (0.13.0)
+
+- **`pinecone.doctor()`: a one-call setup and health check.** One row per check (`check_name`, `status` of
+  `ok`/`warn`/`fail`, `detail`, `hint`): library against catalog version, `shared_preload_libraries`, pgvector,
+  which credential applies (never the key), the control-plane URL, one authenticated request to Pinecone (a
+  network failure, a refused key and a plan refusal are told apart), the worker, the outbox and failed
+  partitions. `doctor(remote => false)` makes no request. New function, so the `0.12.1`→`0.13.0` upgrade
+  script creates it.
+
 ## 0.12.1 — 2026-11-08
 
 - Re-release of 0.12.0 under a fresh tag; the `v0.12.0` GitHub tag was burned by immutable releases.

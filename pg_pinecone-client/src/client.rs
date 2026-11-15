@@ -818,6 +818,37 @@ impl Client {
         }
     }
 
+    /// One cheap authenticated request (`GET /indexes`, body unread), for a health check: `Ok` when
+    /// Pinecone accepts the key, [`Error::Auth`] on a 401, and a 403 as [`Error::Api`] carrying
+    /// Pinecone's own text (a plan or permission refusal, not a bad key).
+    pub fn probe(&self) -> Result<(), Error> {
+        if self.config.api_key.is_empty() {
+            return Err(Error::MissingApiKey);
+        }
+        let url = format!(
+            "{}/indexes",
+            self.config.control_plane_url.trim_end_matches('/')
+        );
+        let mut resp = self
+            .agent
+            .get(&url)
+            .header("Api-Key", self.config.api_key.as_str())
+            .header("X-Pinecone-Api-Version", API_VERSION)
+            .call()
+            .map_err(|e| self.map_transport(e, &url))?;
+        match resp.status().as_u16() {
+            200 => {
+                drain(&mut resp);
+                Ok(())
+            }
+            401 => Err(Error::Auth),
+            status => Err(Error::Api {
+                status,
+                message: read_text(&mut resp),
+            }),
+        }
+    }
+
     /// Polls [`Client::describe_index`] every `poll_every` until `status.ready`
     /// or `deadline` elapses, whichever comes first. Returns [`Error::Timeout`]
     /// (carrying `deadline`, in ms) if the index never becomes ready in time.

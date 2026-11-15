@@ -103,7 +103,7 @@ switching engines, and full-text search.
 In this repository:
 
 - [SQL reference](docs/reference.md): every function, setting, and error message
-- [Operator runbook](docs/runbook.md): monitoring, upgrades, and maintenance
+- [Operator runbook](docs/runbook.md): monitoring, upgrades, and maintenance; start with `SELECT * FROM pinecone.doctor()`
 - [Disaster recovery](docs/disaster-recovery.md): restoring a `remote` table
 - [Changelog](CHANGELOG.md)
 

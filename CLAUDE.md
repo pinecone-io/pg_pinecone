@@ -21,6 +21,11 @@ cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
 CI required checks: `pgrx-tests-pg17/pg18`, `upgrade-test-pg17/pg18`, `lint`, `client-tests`.
 Main requires green CI; don't merge red.
 
+Diagnosing an install: `SELECT * FROM pinecone.doctor()` (`remote => false` makes no request) lists
+version, preload, pgvector, credentials, URL, Pinecone reachability, worker, outbox and failed partitions
+as `ok`/`warn`/`fail` with a hint. A new setup or failure check belongs in `pg_pinecone/src/doctor.rs`, and an
+error about setup, credentials or reachability should point at it.
+
 ## Invariants that bite
 
 - **Upgrades are in place from 0.10.0 on** (the rename from `pinegres` was the last clean break). Anything that changes what `CREATE EXTENSION`
