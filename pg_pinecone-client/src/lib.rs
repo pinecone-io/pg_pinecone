@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod transport;
 mod types;
+mod url_check;
 
 pub use client::{
     API_VERSION, BACKUP_API_VERSION, Client, DOC_API_VERSION, VERSION, names_namespace_limit,
@@ -21,3 +22,4 @@ pub use types::{
     RerankRequest, RerankResult, SearchDocsRequest, UPSERT_MAX_BYTES, UPSERT_MAX_RECORDS,
     UpdateVectorMetadataRequest, UpsertDocsRequest, UpsertVectorsRequest, Vector,
 };
+pub use url_check::require_secure_url;

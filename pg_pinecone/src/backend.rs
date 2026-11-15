@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use pg_pinecone_client::{Client, Config, Error as ClientError};
+use pg_pinecone_client::{Client, Config, Error as ClientError, require_secure_url};
 use pgrx::{
     guc::{GucCheckError, GucSetting},
     prelude::*,
@@ -154,6 +154,30 @@ pub(crate) unsafe extern "C-unwind" fn check_source_tag(
         .apply();
     }
     false
+}
+
+/// `pinecone.control_plane_url`'s GUC check hook: empty passes (the client refuses it at use);
+/// anything else must satisfy [`require_secure_url`].
+///
+/// # Safety
+/// Called only by Postgres as a `check_hook`; `newval` points to a NUL-terminated C string.
+#[pg_guard]
+pub(crate) unsafe extern "C-unwind" fn check_control_plane_url(
+    newval: *mut *mut std::os::raw::c_char,
+    _extra: *mut *mut std::os::raw::c_void,
+    _source: pg_sys::GucSource::Type,
+) -> bool {
+    let value = unsafe { std::ffi::CStr::from_ptr(*newval) }.to_string_lossy();
+    if value.is_empty() {
+        return true;
+    }
+    match require_secure_url(&value) {
+        Ok(()) => true,
+        Err(e) => {
+            unsafe { GucCheckError::new(format!("pinecone.control_plane_url: {e}")).apply() };
+            false
+        }
+    }
 }
 
 /// The credentials a user-invoked remote operation should use, resolved as one
@@ -316,7 +340,8 @@ pub(crate) fn is_transient(err: &ClientError) -> bool {
         | ClientError::NamespaceNotFound { .. }
         | ClientError::Auth
         | ClientError::BadRequest { .. }
-        | ClientError::Conflict { .. } => false,
+        | ClientError::Conflict { .. }
+        | ClientError::InsecureUrl { .. } => false,
     }
 }
 
@@ -626,6 +651,10 @@ pub(crate) fn raise(err: ClientError) -> ! {
         ClientError::Conflict { name } => {
             error!("pg_pinecone: index '{name}' already exists")
         }
+        ClientError::InsecureUrl { reason } => error!(
+            "pg_pinecone: refusing to send the API key over an insecure connection: {reason} — \
+             check pinecone.control_plane_url"
+        ),
         ClientError::Timeout { ms } => error!(
             "pg_pinecone: request timed out after {ms}ms — raise pinecone.timeout_ms if the index is \
              slow to respond"

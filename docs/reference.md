@@ -8,7 +8,7 @@ every GUC, every function's mode/engine support, the error-message table, and kn
 | GUC | Default | |
 |---|---|---|
 | `pinecone.api_key` | *(empty)* | Session-only API key. |
-| `pinecone.control_plane_url` | `https://api.pinecone.io` | Base URL of the Pinecone control plane, paired with the session GUC key above. |
+| `pinecone.control_plane_url` | `https://api.pinecone.io` | Base URL of the Pinecone control plane, paired with the session GUC key above. Must be `https://`; `http://` only for loopback (`localhost`, `127.0.0.0/8`, `::1`). Also enforced by `set_api_key` and on data-plane hosts. |
 | `pinecone.timeout_ms` | `5000` | Timeout, in milliseconds, for each control- and data-plane request. |
 | `pinecone.source_tag` | *(empty)* | Attributes a partner packaging's share of pg_pinecone's Pinecone usage — see "What pg_pinecone sends" below. Normalised to lowercase `[a-z0-9_ :]` (spaces collapse to `_`); rejected only if nothing is left. |
 | `pinecone.sync_mode` | `async` | Default `pinecone.tables.sync_mode` a `pinecone.promote()` call with no explicit `sync_mode` argument uses, for a genuinely new promotion. |
@@ -1150,6 +1150,7 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 | `pg_pinecone: Pinecone rejected the request: ...` | The request was malformed (e.g. dimension mismatch, bad doc-index schema). | Check the message; fix the offending argument. |
 | `pg_pinecone: request timed out after ...ms` | The control or data plane didn't respond in time. | Raise `pinecone.timeout_ms`. |
 | `pg_pinecone: could not reach ...` | Network problem, or a bad `pinecone.control_plane_url`. | Check connectivity and the GUC value. |
+| `refusing to send the API key over an insecure connection` | A control-plane URL (GUC or stored) or a returned index host is `http://` and not loopback. | Use `https://`. A stored URL: re-run `pinecone.set_api_key(key, url)`. |
 | `pg_pinecone: Pinecone returned unexpected status ...` | An unhandled API response. | Check the Pinecone status page; retry. |
 | `pg_pinecone: Pinecone returned unexpected status 429: ...` (an index scan, `pinecone.topk`) | A read hit a Pinecone limit: the rate limit of the namespace, or the plan's monthly read units (the message says which). Reads are not retried (only writes are: 429 and 5xx, three attempts), so the statement fails at once. | Retry with backoff in the application, or spread the load over namespaces with a [partition column](#partition-column-on-a-vector-table); see [Limits](#limits). |
 | `pg_pinecone index '...' has format version N (this build reads up to M): REINDEX it` | An index a newer release built, after a downgrade (SQLSTATE 55000). | `REINDEX INDEX ...`; see [Index format version](#index-format-version). |

@@ -53,6 +53,9 @@ extension_sql!(
 /// own "permission denied for table secret" — the table ACL *is* the access
 /// model, no catch/rewrap needed.
 pub(crate) fn set_api_key(key: &str, control_plane_url: &str) {
+    if let Err(e) = pg_pinecone_client::require_secure_url(control_plane_url) {
+        error!("pinecone.set_api_key: control_plane_url: {e}");
+    }
     Spi::run_with_args(
         "INSERT INTO pinecone.secret (id, api_key, control_plane_url) VALUES (true, $1, $2) \
          ON CONFLICT (id) DO UPDATE SET api_key = EXCLUDED.api_key, \

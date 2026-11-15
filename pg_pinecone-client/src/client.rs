@@ -29,6 +29,7 @@ use crate::{
         QueryRequest, ReadCapacity, RerankRequest, RerankResult, SearchDocsRequest,
         UpdateVectorMetadataRequest, UpsertDocsRequest, UpsertVectorsRequest, Vector,
     },
+    url_check::require_secure_url,
 };
 
 /// Path segment used when the caller specifies no namespace; the document
@@ -605,10 +606,7 @@ impl Client {
         inputs: &[String],
         input_type: &str,
     ) -> Result<Vec<Vec<f32>>, Error> {
-        let url = format!(
-            "{}/embed",
-            self.config.control_plane_url.trim_end_matches('/')
-        );
+        let url = format!("{}/embed", self.control_plane()?);
         let body = json!({
             "model": model,
             "parameters": {"input_type": input_type},
@@ -667,10 +665,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/rerank",
-            self.config.control_plane_url.trim_end_matches('/')
-        );
+        let url = format!("{}/rerank", self.control_plane()?);
         let mut body = json!({
             "model": req.model,
             "query": req.query,
@@ -719,10 +714,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/indexes",
-            self.config.control_plane_url.trim_end_matches('/')
-        );
+        let url = format!("{}/indexes", self.control_plane()?);
         let body = json!({
             "name": req.name,
             "vector_type": "dense",
@@ -793,11 +785,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/indexes/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
-            index_segment(name)
-        );
+        let url = format!("{}/indexes/{}", self.control_plane()?, index_segment(name));
         let mut resp = self
             .agent
             .get(&url)
@@ -876,11 +864,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/indexes/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
-            index_segment(name)
-        );
+        let url = format!("{}/indexes/{}", self.control_plane()?, index_segment(name));
         let mut resp = self
             .agent
             .delete(&url)
@@ -959,10 +943,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/indexes",
-            self.config.control_plane_url.trim_end_matches('/')
-        );
+        let url = format!("{}/indexes", self.control_plane()?);
         let body = json!({
             "name": req.name,
             "deployment": {
@@ -1010,11 +991,7 @@ impl Client {
         if self.config.api_key.is_empty() {
             return Err(Error::MissingApiKey);
         }
-        let url = format!(
-            "{}/indexes/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
-            index_segment(name)
-        );
+        let url = format!("{}/indexes/{}", self.control_plane()?, index_segment(name));
         let mut resp = self
             .agent
             .delete(&url)
@@ -1275,11 +1252,7 @@ impl Client {
         if let Some(host) = self.cache().get(index).cloned() {
             return Ok(host);
         }
-        let url = format!(
-            "{}/indexes/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
-            index_segment(index)
-        );
+        let url = format!("{}/indexes/{}", self.control_plane()?, index_segment(index));
         let mut resp = self
             .agent
             .get(&url)
@@ -1291,6 +1264,7 @@ impl Client {
             200 => {
                 let desc: IndexDescription = read_json(&mut resp)?;
                 let host = normalize_scheme(&desc.host);
+                require_secure_url(&host)?;
                 self.cache().insert(index.to_string(), host.clone());
                 Ok(host)
             }
@@ -2099,7 +2073,7 @@ impl Client {
         }
         let url = format!(
             "{}/indexes/{}/backups",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(&req.index)
         );
         let mut body = json!({});
@@ -2138,7 +2112,7 @@ impl Client {
     pub fn list_backups(&self, index: &str) -> Result<Vec<BackupInfo>, Error> {
         let url_base = format!(
             "{}/indexes/{}/backups",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(index)
         );
         self.list_backups_paginated(&url_base)
@@ -2148,10 +2122,7 @@ impl Client {
     /// /backups`), walking pagination internally. Sent with
     /// [`BACKUP_API_VERSION`].
     pub fn list_project_backups(&self) -> Result<Vec<BackupInfo>, Error> {
-        let url_base = format!(
-            "{}/backups",
-            self.config.control_plane_url.trim_end_matches('/')
-        );
+        let url_base = format!("{}/backups", self.control_plane()?);
         self.list_backups_paginated(&url_base)
     }
 
@@ -2216,7 +2187,7 @@ impl Client {
         }
         let url = format!(
             "{}/backups/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(backup_id)
         );
         let mut resp = self
@@ -2248,7 +2219,7 @@ impl Client {
         }
         let url = format!(
             "{}/backups/{}",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(backup_id)
         );
         let mut resp = self
@@ -2289,7 +2260,7 @@ impl Client {
         }
         let url = format!(
             "{}/backups/{}/create-index",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(backup_id)
         );
         let body = json!({ "name": new_index_name });
@@ -2335,7 +2306,7 @@ impl Client {
         }
         let url = format!(
             "{}/indexes/{}/backups/schedule",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(index)
         );
         let mut resp = self
@@ -2372,7 +2343,7 @@ impl Client {
         }
         let url = format!(
             "{}/indexes/{}/backups/schedule",
-            self.config.control_plane_url.trim_end_matches('/'),
+            self.control_plane()?,
             index_segment(index)
         );
         let mut resp = self
@@ -2400,6 +2371,12 @@ impl Client {
 
     fn evict(&self, index: &str) {
         self.cache().remove(index);
+    }
+
+    /// Refuses a cleartext base URL: every request sends the API key to it.
+    fn control_plane(&self) -> Result<&str, Error> {
+        require_secure_url(&self.config.control_plane_url)?;
+        Ok(self.config.control_plane_url.trim_end_matches('/'))
     }
 
     fn map_transport(&self, err: ureq::Error, url: &str) -> Error {
