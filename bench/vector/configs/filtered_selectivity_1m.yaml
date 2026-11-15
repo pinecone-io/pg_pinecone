@@ -1,0 +1,96 @@
+# Planner choice against the filter's selectivity: native with a pushed equality key at 0.1 %, 1 %, 3 % and 10 %, 1M x 768d.
+# The planner runs free (the default plan); when it picks the seqscan the harness adds the forced-index series, and
+# exact_seqscan is the forced-seqscan baseline, so each fraction has both plans' latency at 1 and 8 clients.
+# mode_l_threshold stays at its default (0.03): 0.1 %, 1 % and 3 % are mode L, 10 % is mode H.
+name: filtered_selectivity_1m
+seed: 42
+k: 10
+warmup_queries: 20
+hardness_recall_threshold: 1.0
+min_throughput_seconds: 5.0
+
+postgres:
+  maintenance_work_mem: 8GB
+  min_wal_size: 1GB
+  max_wal_size: 4GB
+
+dataset:
+  kind: real
+  artifact: wikidpr_768d_1m.npz
+  n: 1000000
+  dim: 768
+  n_centers: 1000
+  kmeans_sample: 100000
+  kmeans_iters: 15
+  n_queries: 500
+
+metric: l2
+
+filters:
+  selectivities: [0.001, 0.01, 0.03, 0.10]
+  modes: [correlated]
+  run:
+    - {selectivity: 0.001, mode: correlated}
+    - {selectivity: 0.01, mode: correlated}
+    - {selectivity: 0.03, mode: correlated}
+    - {selectivity: 0.10, mode: correlated}
+
+systems:
+  - name: pnat_filt_0p1pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0001_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    filtered_iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+  - name: pnat_filt_1pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0010_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    filtered_iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+  - name: pnat_filt_3pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0030_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    filtered_iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+  - name: pnat_filt_10pct
+    type: pg_pinecone_native
+    skip_unfiltered: true
+    explain_probe: true
+    record_scan_stats: true
+    build_params: {seed: 42, filter_column: filt_correlated_0100_eq}
+    sweep_param: rescore_multiplier
+    sweep_values: [0]
+    filtered_iterative_scan_values: ["auto"]
+    scan_budget_param: pinecone.max_scan_tuples
+    filtered_scan_budget_values: [20000]
+
+  - name: exact_seqscan
+    type: exact
+    skip_unfiltered: true
+    sweep_param: none
+    sweep_values: [0]
+
+concurrency: [1, 8]
+
+churn:
+  enabled: false
+
+sift1m:
+  enabled: false
