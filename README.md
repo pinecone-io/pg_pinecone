@@ -99,15 +99,20 @@ own CPU, so it runs anywhere you build it. For running the tests, see [CONTRIBUT
 
 Release tarballs, the source zip, the Postgres.app package, and the SBOM
 (`pg_pinecone-<version>.cdx.json`) carry GitHub build-provenance attestations. The Docker
-images are also signed with keyless cosign.
+images are also signed with keyless cosign. Pin the signer to this repo's release workflows
+on `main` or a `v*` tag; a run from any other branch is not a release.
 
 ```bash
-gh attestation verify pg_pinecone-<version>-pg18-linux-x86_64.tar.gz --repo pinecone-io/pg_pinecone
-gh attestation verify oci://pineconeteam/pg_pinecone:<version>-pg18 --repo pinecone-io/pg_pinecone
+ID='^https://github\.com/pinecone-io/pg_pinecone/\.github/workflows/(release|docker-publish)\.yml@refs/(heads/main|tags/v.+)$'
+
+gh attestation verify pg_pinecone-<version>-pg18-linux-x86_64.tar.gz \
+  --repo pinecone-io/pg_pinecone --cert-identity-regex "$ID"
+gh attestation verify oci://pineconeteam/pg_pinecone:<version>-pg18 \
+  --repo pinecone-io/pg_pinecone --cert-identity-regex "$ID"
 
 cosign verify pineconeteam/pg_pinecone:<version>-pg18 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/pinecone-io/pg_pinecone/\.github/workflows/(release|docker-publish)\.yml@refs/.+$'
+  --certificate-identity-regexp "$ID"
 ```
 
 ## Documentation

@@ -25,6 +25,11 @@ name: Release
 # source SBOM is attached and attested, and the Docker images are cosign-signed and attested
 # (see "Verifying releases" in the README). Attestations are made in jobs that run no PR code.
 #
+# A tag with a suffix (v0.13.0-rc.1) is a pre-release: it builds, signs, and attaches like a
+# release but is marked pre-release, never Latest, never moves pgNN/latest, and skips PGXN.
+# Use one to rehearse a release without burning its version. The suffix is ignored when
+# matching the crate version.
+#
 # The build runs PR-controlled code (build scripts, proc-macros, the smoke script), so it gets
 # a read-only token that is not persisted in .git/config. Only create-release, upload, publish, and
 # postgresapp-sign hold `contents: write`. None of them run on a PR. postgresapp-sign does run
@@ -55,6 +60,7 @@ env:
   # No real tag on a dry-run PR — "dry-run" is a safe, slash-free stand-in
   # (it only ever names a build artifact that never reaches a release).
   RELEASE_TAG: ${{ github.event.inputs.tag || (github.event_name == 'pull_request' && 'dry-run' || github.ref_name) }}
+  PRERELEASE: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
 
 jobs:
   # Guard the tag against Cargo.toml and ensure a release exists to upload
@@ -74,10 +80,17 @@ jobs:
       - name: Verify tag matches crate version
         run: |
           crate_version=$(grep -m1 '^version' pg_pinecone/Cargo.toml | cut -d'"' -f2)
-          if [ "$RELEASE_TAG" != "v$crate_version" ]; then
+          if [ "${RELEASE_TAG%%-*}" != "v$crate_version" ]; then
             echo "Tag $RELEASE_TAG does not match pg_pinecone/Cargo.toml version $crate_version" >&2
             exit 1
           fi
+
+      # Attestations name the workflow ref that made them; keep that to main or a tag.
+      - name: Dispatch only from main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Dispatch this workflow from main, not $GITHUB_REF" >&2
+          exit 1
 
       # A draft, so the upload jobs can attach assets: immutable releases lock a
       # release on publish, which refused the post-publish upload before. The
@@ -88,7 +101,9 @@ jobs:
           OVERWRITE: ${{ inputs.overwrite }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --draft
+            flags=(--draft)
+            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes "${flags[@]}"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$OVERWRITE" != true ]; then
             attached=$(gh release view "$RELEASE_TAG" --json assets \
               --jq '[.assets[].name | select(startswith("pg_pinecone-"))] | join(", ")')
@@ -112,7 +127,7 @@ jobs:
         run: echo "SBOM=pg_pinecone-${RELEASE_TAG#v}.cdx.json" >> "$GITHUB_ENV"
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          path: .
+          file: Cargo.lock
           format: cyclonedx-json
           output-file: ${{ env.SBOM }}
           upload-artifact: false
@@ -298,7 +313,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest="${{ github.event_name == 'push' }}"
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest="${{ github.event_name == 'push' && env.PRERELEASE != 'true' }}"
 
   # Unsigned Postgres.app build. Runs on a PR dry run too. No signing secrets:
   # the signed package is a separate job so a pull request cannot read them.
@@ -562,7 +577,7 @@ jobs:
   pgxn-release:
     name: release (pgxn)
     needs: [create-release, pgxn-pack]
-    if: github.event_name != 'pull_request' && needs.create-release.result == 'success' && needs.pgxn-pack.result == 'success' && needs.pgxn-pack.outputs.present == 'true'
+    if: github.event_name != 'pull_request' && !contains(github.event.inputs.tag || github.ref_name, '-') && needs.create-release.result == 'success' && needs.pgxn-pack.result == 'success' && needs.pgxn-pack.outputs.present == 'true'
     runs-on: ubuntu-latest
     environment: pgxn
     permissions:
@@ -751,9 +766,9 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           tags=(-t "${IMAGE}:${version}-pg${{ matrix.pg }}")
-          # Move pgNN/latest only on a tag push — a dispatch rebuild of an older
-          # tag must not retarget them and downgrade default pulls.
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
+          # Move pgNN/latest only on a release tag push — a dispatch rebuild of an older
+          # tag or a pre-release must not retarget them.
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PRERELEASE" != true ]; then
             tags+=(-t "${IMAGE}:pg${{ matrix.pg }}")
             [ "${{ matrix.pg }}" = 18 ] && tags+=(-t "${IMAGE}:latest")
           fi
