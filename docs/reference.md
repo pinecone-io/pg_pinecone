@@ -1302,13 +1302,6 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
   a larger value fails its upsert and parks the queue. Renaming the key column needs a `REINDEX`;
   scans error until then. An attached index (`pinecone_index`) runs no backfill: its namespace
   must already carry the metadata, or filtered reads miss rows (see the runbook).
-- **The planner does not price a pushed key's size.** `amcostestimate` prices a pushed key at the
-  1,000-row pool (the pinned `rescore_multiplier`, if any) and the ramped lists its scan uses, and gives a 1 % and a 10 % key that same cost, so
-  it can pick the exact filter-first scan (mode L, what a key at or below `pinecone.mode_l_threshold`
-  gets) where the sequential scan is faster: 33 to 34 ms against 17 to 20 ms at one client and 109 to
-  117 ms against 85 to 97 ms at eight (1M x 768d, 1 % key, measured before the estimate priced the pool
-  and the lists). Teaching the estimate the key's selectivity is a known follow-up; until then
-  `SET pinecone.am_enabled = off` steers a query away.
 - **Vector ids are capped at 512 bytes** (Pinecone's own limit). `id_column` must be
   `text`/`varchar`/`uuid`/`int2`/`int4`/`int8` — types with a canonical, GUC-independent text form.
 - **Document ids are capped at 512 bytes, text fields at 100 KB / 9,000 tokens (estimated as

@@ -2301,7 +2301,6 @@ unsafe extern "C-unwind" fn amcostestimate(
             *index_total_cost = pg_sys::disable_cost;
             return;
         }
-        pg_sys::index_close(index_rel, pg_sys::AccessShareLock as pg_sys::LOCKMODE);
 
         let costs = crate::local::cost::PlannerCosts::current();
         use crate::local::metapage::Mode;
@@ -2317,8 +2316,21 @@ unsafe extern "C-unwind" fn amcostestimate(
                 };
                 // A pushed key (an `indexclauses` entry) scans with the 0.9.0 pool and the ramped lists.
                 let pushed_key = !(*path).indexclauses.is_null();
-                let (pool_rows, nprobe) =
-                    crate::local::scan::planned_pool_and_nprobe(&meta, pushed_key);
+                // A `Const` key is priced by the mode the scan will pick for its estimated fraction;
+                // a `Param` (generic plan) keeps the pushed-key pricing and `index_selectivity` 1.0.
+                let key_fraction = if pushed_key {
+                    crate::local::scan::planned_key_fraction(index_rel, &meta, path)
+                } else {
+                    None
+                };
+                let (pool_rows, nprobe) = if pushed_key {
+                    crate::local::scan::planned_filtered_pool_and_nprobe(&meta, rows, key_fraction)
+                } else {
+                    crate::local::scan::planned_pool_and_nprobe(&meta, false)
+                };
+                if let Some(fraction) = key_fraction {
+                    *index_selectivity = fraction;
+                }
                 let pool = crate::local::cost::rescore_pool(pool_rows, rows);
                 // The planner's own Mackert–Lohman estimator — how many
                 // physical page reads `pool` random heap fetches actually
@@ -2350,6 +2362,7 @@ unsafe extern "C-unwind" fn amcostestimate(
                 *index_total_cost = total;
             }
         }
+        pg_sys::index_close(index_rel, pg_sys::AccessShareLock as pg_sys::LOCKMODE);
     }
 }
 

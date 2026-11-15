@@ -151,6 +151,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use pgrx::{
     guc::{GucContext, GucFlags, GucRegistry, GucSetting},
+    list::PgList,
     prelude::*,
 };
 
@@ -343,6 +344,22 @@ pub(crate) fn planned_pool_and_nprobe(meta: &MetaPage, pushed_key: bool) -> (u32
     let lists = meta.n_lists as usize;
     let nprobe = nprobe_for(meta.default_nprobe(), lists, 0.0, pushed_key, false);
     (pool as u32, nprobe as u32)
+}
+
+/// [`planned_pool_and_nprobe`] for a key whose estimated fraction the planner read: mode L scans every
+/// list and fetches one heap row per estimated match, mode H keeps the pushed-key pair.
+pub(crate) fn planned_filtered_pool_and_nprobe(
+    meta: &MetaPage,
+    rows: f64,
+    key_fraction: Option<f64>,
+) -> (u32, u32) {
+    match key_fraction {
+        Some(fraction) if mode_l_serves(fraction) => {
+            let matches = (rows * fraction).ceil().min(f64::from(u32::MAX));
+            (matches as u32, meta.n_lists)
+        }
+        _ => planned_pool_and_nprobe(meta, true),
+    }
 }
 
 fn nprobe_for(
@@ -882,6 +899,85 @@ fn forced_scan_mode() -> Option<ScanMode> {
     }
 }
 
+/// The stats sketch's estimated fraction of records matching an equality on `point` (`None`: a
+/// wider interval, which the sketch cannot price and is assumed unselective). The one read behind
+/// both the scan's mode choice and `amcostestimate`, so the planner prices the mode the scan picks.
+pub(crate) unsafe fn estimated_fraction(
+    index: pg_sys::Relation,
+    meta: &MetaPage,
+    point: Option<i64>,
+) -> f64 {
+    let Some(value) = point else {
+        return 1.0;
+    };
+    if meta.stats_start == INVALID_BLOCK {
+        // No stats page (shouldn't happen for a filtered clustered index —
+        // ambuild always writes one) — assume unselective, the mode that
+        // degrades gracefully.
+        return 1.0;
+    }
+    // The CURRENT on-disk insert counter, not the rd_amcache'd copy —
+    // a long-lived backend's cache never learns about other backends'
+    // (or its own) inserts, and the staleness correction must be
+    // monotone in the true insert count to keep its toward-mode-L
+    // guarantee (`stats.rs`'s insert-staleness bound). One extra
+    // buffered block-0 read per FILTERED scan only, alongside the
+    // stats-page read this branch already pays.
+    let inserted = unsafe { metapage::read_inserted_count_fresh(index) };
+    unsafe { stats::read(index, meta.stats_start) }.estimate_fraction(value, inserted)
+}
+
+/// Whether an estimated fraction is served by mode L (`pinecone.mode_l_threshold`).
+pub(crate) fn mode_l_serves(estimated_fraction: f64) -> bool {
+    estimated_fraction <= MODE_L_THRESHOLD.get()
+}
+
+/// The estimated fraction of the scan's pushed key when every key is a `Const` the planner can
+/// read, else `None` (a `Param` of a generic plan keeps the unkeyed-fraction pricing). A NULL
+/// key matches nothing (0.0); several keys price at the most selective one.
+pub(crate) unsafe fn planned_key_fraction(
+    index: pg_sys::Relation,
+    meta: &MetaPage,
+    path: *mut pg_sys::IndexPath,
+) -> Option<f64> {
+    unsafe {
+        if !meta.has_filter() {
+            return None;
+        }
+        let clauses = PgList::<pg_sys::IndexClause>::from_pg((*path).indexclauses);
+        let mut fraction: Option<f64> = None;
+        for clause in clauses.iter_ptr() {
+            for qual in PgList::<pg_sys::RestrictInfo>::from_pg((*clause).indexquals).iter_ptr() {
+                let op = (*qual).clause as *mut pg_sys::OpExpr;
+                if op.is_null() || !pgrx::is_a(op as *mut pg_sys::Node, pg_sys::NodeTag::T_OpExpr) {
+                    return None;
+                }
+                let args = PgList::<pg_sys::Node>::from_pg((*op).args);
+                let rhs = args.get_ptr(1)?;
+                if !pgrx::is_a(rhs, pg_sys::NodeTag::T_Const) {
+                    return None;
+                }
+                let konst = rhs as *mut pg_sys::Const;
+                let one = if (*konst).constisnull {
+                    0.0
+                } else {
+                    let kind = match (*konst).consttype {
+                        pg_sys::INT2OID | pg_sys::INT4OID | pg_sys::INT8OID => {
+                            kind_for_subtype((*konst).consttype, meta.filter_kind)
+                        }
+                        pg_sys::TEXTOID | pg_sys::VARCHAROID => FilterKind::Text,
+                        _ => return None,
+                    };
+                    let value = kind.datum_to_value((*konst).constvalue);
+                    estimated_fraction(index, meta, Some(value))
+                };
+                fraction = Some(fraction.map_or(one, |prev| prev.min(one)));
+            }
+        }
+        fraction
+    }
+}
+
 /// The mode decision (module docstring): forced mode if set, else the
 /// stats sketch's estimated qualifying fraction vs `pinecone.mode_l_threshold`.
 /// Always logs the decision at DEBUG1 so a plan run under
@@ -897,28 +993,9 @@ fn choose_filtered_mode(index: pg_sys::Relation, meta: &MetaPage, pred: &Predica
         );
         return forced;
     }
-    let est = if meta.stats_start == INVALID_BLOCK {
-        // No stats page (shouldn't happen for a filtered clustered index —
-        // ambuild always writes one) — assume unselective, the mode that
-        // degrades gracefully.
-        1.0
-    } else if let Some(value) = pred.point() {
-        // The CURRENT on-disk insert counter, not the rd_amcache'd copy —
-        // a long-lived backend's cache never learns about other backends'
-        // (or its own) inserts, and the staleness correction must be
-        // monotone in the true insert count to keep its toward-mode-L
-        // guarantee (`stats.rs`'s insert-staleness bound). One extra
-        // buffered block-0 read per FILTERED scan only, alongside the
-        // stats-page read this branch already pays.
-        let inserted = unsafe { metapage::read_inserted_count_fresh(index) };
-        unsafe { stats::read(index, meta.stats_start) }.estimate_fraction(value, inserted)
-    } else {
-        // The sketch only knows equality: a wider interval is assumed
-        // unselective, like a missing stats page.
-        1.0
-    };
+    let est = unsafe { estimated_fraction(index, meta, pred.point()) };
     let threshold = MODE_L_THRESHOLD.get();
-    let mode = if est <= threshold {
+    let mode = if mode_l_serves(est) {
         ScanMode::L
     } else {
         ScanMode::H

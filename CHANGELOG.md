@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The planner prices a native filtered scan by its key's selectivity.** `amcostestimate` reads the stats page for a constant key and prices the mode the scan will pick (mode L: every list page plus one heap fetch per estimated match; mode H: the ramped lists), with `index_selectivity` set to the estimated fraction, so a rare key now takes the sequential scan where that is faster. A `Param` key in a generic plan is priced as before. No on-disk or SQL change.
+
 ## 0.12.1 — 2026-11-08
 
 - Re-release of 0.12.0 under a fresh tag; the `v0.12.0` GitHub tag was burned by immutable releases.

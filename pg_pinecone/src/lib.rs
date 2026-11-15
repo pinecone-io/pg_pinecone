@@ -32036,14 +32036,94 @@ mod tests {
             keyed.join("\n").contains("Index Cond"),
             "the key must be pushed into the index scan: {keyed:?}"
         );
-        // The startup is what the old estimate priced the same for both; the totals also move with the
-        // planner's own charge for the key.
-        let ((plain_startup, plain_total), (keyed_startup, keyed_total)) =
+        // Only the startup compares: the total also moves with the key's estimated selectivity.
+        let ((plain_startup, _), (keyed_startup, _)) =
             (index_scan_cost(&plain), index_scan_cost(&keyed));
         assert!(
-            keyed_total > plain_total && keyed_startup > plain_startup,
-            "a pushed key scans a larger pool over more lists: keyed {keyed_startup}..{keyed_total}, \
-             unfiltered {plain_startup}..{plain_total}"
+            keyed_startup > plain_startup,
+            "a pushed key scans a larger pool over more lists: keyed {keyed_startup}, \
+             unfiltered {plain_startup}"
+        );
+    }
+
+    /// A constant key is priced by the mode the scan will pick for its estimated fraction: a rare
+    /// one (mode L, every list page plus a fetch per match) loses to the sequential scan, a common
+    /// one (mode H) keeps the index. A `Param` key, whose value a generic plan cannot read, keeps
+    /// the pushed-key pricing and so the index plan.
+    #[pg_test]
+    fn am_costestimate_prices_a_constant_key_by_its_selectivity() {
+        install_am_opclasses();
+        let table = "am_cost_selectivity";
+        // Wide vectors live in TOAST, so the heap proper is small: the sequential scan of a rare key
+        // reads fewer pages than mode L's pass over every list.
+        let (n, dim) = (50_000, 768);
+        Spi::run(&format!(
+            "CREATE TABLE {table} (id bigint PRIMARY KEY, embedding vector({dim}), tenant int8)"
+        ))
+        .expect("create table");
+        // Tenant 0 is 0.1 % of the rows (mode L); tenants 1 to 3 a third each (mode H).
+        Spi::run(&format!(
+            "INSERT INTO {table} (id, embedding, tenant) \
+             SELECT i, ('[' || (SELECT string_agg(random()::text, ',') \
+                                FROM generate_series(1, {dim}) WHERE i > 0) || ']')::vector, \
+                    CASE WHEN i % 1000 = 0 THEN 0 ELSE 1 + i % 3 END \
+             FROM generate_series(1, {n}) AS i"
+        ))
+        .expect("insert rows");
+        Spi::run(&format!(
+            "CREATE INDEX {table}_idx ON {table} USING pinecone (embedding vector_l2_ops, tenant) \
+             WITH (mode = 'local', small_n_threshold = 1000, rescore_multiplier = 1, seed = 313)"
+        ))
+        .expect("create filtered native index");
+        Spi::run(&format!("ANALYZE {table}")).expect("analyze");
+        // SSD-class random reads and a cheap per-row CPU charge, as on a narrow heap: the sequential
+        // scan then sits between mode H's fixed cost and mode L's pass over every list.
+        Spi::run("SET random_page_cost = 1.1").expect("random_page_cost");
+        Spi::run("SET cpu_tuple_cost = 0.0075").expect("cpu_tuple_cost");
+
+        let q = vector_literal(&vec![0.5f32; dim]);
+        let plan_for = |tenant: i64| {
+            explain_lines(&format!(
+                "SELECT id FROM {table} WHERE tenant = {tenant} \
+                 ORDER BY embedding <-> '{q}'::vector LIMIT 10"
+            ))
+            .join("\n")
+        };
+        let (rare, common) = (plan_for(0), plan_for(1));
+        assert!(
+            rare.contains("Seq Scan") && !rare.contains(&format!("{table}_idx")),
+            "a 0.1 % key must take the sequential scan: {rare}"
+        );
+        assert!(
+            common.contains(&format!("{table}_idx")) && !common.contains("Seq Scan"),
+            "a 33 % key must keep the index: {common}"
+        );
+
+        // Mode L reads every list page, mode H the ramped lists: the old estimate priced both alike.
+        Spi::run("SET enable_seqscan = off").expect("index plans only");
+        let (rare_startup, _) = index_scan_cost(&explain_lines(&format!(
+            "SELECT id FROM {table} WHERE tenant = 0 ORDER BY embedding <-> '{q}'::vector LIMIT 10"
+        )));
+        let (common_startup, _) = index_scan_cost(&explain_lines(&format!(
+            "SELECT id FROM {table} WHERE tenant = 1 ORDER BY embedding <-> '{q}'::vector LIMIT 10"
+        )));
+        assert!(
+            rare_startup > common_startup,
+            "a rare key is priced at mode L's pass over every list: rare {rare_startup}, \
+             common {common_startup}"
+        );
+        Spi::run("RESET enable_seqscan").expect("reset");
+
+        Spi::run("SET plan_cache_mode = force_generic_plan").expect("generic plans");
+        Spi::run(&format!(
+            "PREPARE am_cost_param (int8) AS SELECT id FROM {table} WHERE tenant = $1 \
+             ORDER BY embedding <-> '{q}'::vector LIMIT 10"
+        ))
+        .expect("prepare");
+        let generic = explain_lines("EXECUTE am_cost_param(0)").join("\n");
+        assert!(
+            generic.contains(&format!("{table}_idx")),
+            "a Param key keeps its pushed-key pricing, and the index plan with it: {generic}"
         );
     }
 
