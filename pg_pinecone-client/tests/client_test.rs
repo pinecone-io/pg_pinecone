@@ -6923,3 +6923,53 @@ async fn search_docs_403_naming_the_plan_is_a_refusal_not_an_auth_failure() {
         other => panic!("expected the refusal with its message, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn cleartext_control_plane_url_is_refused_before_any_request() {
+    let client = Client::new(config("http://example.com", "key"));
+    let err = query_blocking(Arc::new(client), query("docs"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InsecureUrl { .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn cleartext_data_plane_host_is_refused() {
+    let control_plane = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/indexes/docs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "docs",
+            "host": "http://data.example.com",
+            "dimension": 3,
+            "metric": "cosine",
+            "status": {"ready": true}
+        })))
+        .mount(&control_plane)
+        .await;
+    let client = Client::new(config(control_plane.uri(), "key"));
+    let err = query_blocking(Arc::new(client), query("docs"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InsecureUrl { .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_redirect_is_not_followed_with_the_api_key() {
+    let control_plane = MockServer::start().await;
+    let elsewhere = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/indexes/docs"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/indexes/docs", elsewhere.uri())),
+        )
+        .mount(&control_plane)
+        .await;
+    let client = Client::new(config(control_plane.uri(), "key"));
+    let err = query_blocking(Arc::new(client), query("docs"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Api { status: 302, .. }), "{err:?}");
+    assert_eq!(elsewhere.received_requests().await.unwrap().len(), 0);
+}

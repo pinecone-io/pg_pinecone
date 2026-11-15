@@ -641,6 +641,10 @@ fn classify_generic_error(check: &str, e: &ClientError) -> ReadinessRow {
             "unavailable (error)".to_string(),
             "no API key configured".to_string(),
         ),
+        ClientError::InsecureUrl { reason } => (
+            "unavailable (error)".to_string(),
+            format!("insecure URL refused: {reason}"),
+        ),
         ClientError::Api { status, message } => (
             "unavailable (error)".to_string(),
             format!("unexpected status {status}: {message}"),

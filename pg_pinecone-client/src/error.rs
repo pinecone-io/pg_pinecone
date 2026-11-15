@@ -37,6 +37,9 @@ pub enum Error {
     )]
     Timeout { ms: u64 },
 
+    #[error("insecure URL refused: {reason}")]
+    InsecureUrl { reason: String },
+
     #[error("could not reach {url}: {reason}")]
     Transport { url: String, reason: String },
 
