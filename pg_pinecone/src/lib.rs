@@ -24,6 +24,7 @@ mod docs_schema;
 mod docs_search;
 mod docs_sync;
 mod docs_track;
+mod doctor;
 mod filter;
 mod inference;
 mod lifecycle;
@@ -292,7 +293,8 @@ mod pinecone {
     use crate::{
         backend::{self, require_text},
         backup_readiness, catalog, detach, docs, docs_drain, docs_outbox, docs_schema, docs_track,
-        inference, outbox, promote, recover, repoint, secret, status, sync_trigger, topk, track,
+        doctor, inference, outbox, promote, recover, repoint, secret, status, sync_trigger, topk,
+        track,
     };
 
     /// Embeds `input` into a dense vector via Pinecone Inference.
@@ -372,6 +374,27 @@ mod pinecone {
     #[pg_extern]
     fn user_agent() -> String {
         backend::user_agent_header()
+    }
+
+    /// One row per install/health check: `check_name`, `status` (`ok`, `warn` or `fail`), `detail`
+    /// and a `hint` with the fix. Covers the library/catalog version, `shared_preload_libraries`,
+    /// pgvector, which credential applies (never the key), the control-plane URL, one cheap
+    /// authenticated call to Pinecone, the background worker, the outbox and failed partitions.
+    /// `remote => false` skips the Pinecone call (air-gapped, or to answer fast). Runs as the
+    /// caller; what the role cannot see is a `warn`, not a `fail`. `NULL` means the default.
+    #[pg_extern]
+    fn doctor(
+        remote: default!(Option<bool>, true),
+    ) -> TableIterator<
+        'static,
+        (
+            name!(check_name, String),
+            name!(status, String),
+            name!(detail, String),
+            name!(hint, Option<String>),
+        ),
+    > {
+        TableIterator::new(doctor::doctor(remote.unwrap_or(true)))
     }
 
     /// Registers `tbl` for local search via `pinecone.topk`, no Pinecone account
@@ -3676,6 +3699,177 @@ mod tests {
         assert!(
             agent.starts_with("pg_pinecone-client-"),
             "unexpected user_agent: {agent}"
+        );
+    }
+
+    fn doctor_rows(args: &str) -> Vec<(String, String, String, Option<String>)> {
+        Spi::connect(|client| {
+            client
+                .select(&format!("SELECT * FROM pinecone.doctor({args})"), None, &[])
+                .expect("select from pinecone.doctor")
+                .map(|row| {
+                    (
+                        row.get_by_name::<String, _>("check_name")
+                            .expect("get check_name")
+                            .expect("check_name is NOT NULL"),
+                        row.get_by_name::<String, _>("status")
+                            .expect("get status")
+                            .expect("status is NOT NULL"),
+                        row.get_by_name::<String, _>("detail")
+                            .expect("get detail")
+                            .expect("detail is NOT NULL"),
+                        row.get_by_name::<String, _>("hint").expect("get hint"),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    fn doctor_check(
+        rows: &[(String, String, String, Option<String>)],
+        name: &str,
+    ) -> (String, String, Option<String>) {
+        let row = rows
+            .iter()
+            .find(|row| row.0 == name)
+            .unwrap_or_else(|| panic!("no {name} row in {rows:?}"));
+        (row.1.clone(), row.2.clone(), row.3.clone())
+    }
+
+    fn mock_indexes_endpoint(status: u16) -> MockBackend {
+        MockBackend::start(move |control_plane, data_plane| async move {
+            Mock::given(method("GET"))
+                .and(path("/indexes"))
+                .and(header("Api-Key", "test-key"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({"indexes": []})))
+                .mount(&control_plane)
+                .await;
+            (control_plane, data_plane)
+        })
+    }
+
+    #[pg_test]
+    fn doctor_reports_ok_against_a_healthy_backend() {
+        create_extension_vector();
+        let backend = mock_indexes_endpoint(200);
+        point_at_mock(&backend);
+
+        let rows = doctor_rows("");
+        let names: Vec<_> = rows.iter().map(|row| row.0.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "version",
+                "shared_preload_libraries",
+                "pgvector",
+                "credentials",
+                "control_plane_url",
+                "reachability",
+                "outbox",
+                "failed_partitions",
+                "worker",
+            ]
+        );
+        let version = doctor_check(&rows, "version");
+        assert_eq!(version.0, "ok", "{version:?}");
+        assert_eq!(doctor_check(&rows, "pgvector").0, "ok");
+        assert_eq!(doctor_check(&rows, "credentials").0, "ok");
+        let reachability = doctor_check(&rows, "reachability");
+        assert_eq!(reachability.0, "ok", "{reachability:?}");
+        assert_eq!(reachability.2, None);
+        assert_eq!(doctor_check(&rows, "outbox").0, "ok");
+        assert_eq!(doctor_check(&rows, "failed_partitions").0, "ok");
+        // The mock is plain http.
+        assert_eq!(doctor_check(&rows, "control_plane_url").0, "warn");
+        assert!(
+            rows.iter().all(|row| !row.2.contains("test-key")),
+            "the key leaked: {rows:?}"
+        );
+    }
+
+    #[pg_test]
+    fn doctor_fails_reachability_when_pinecone_refuses_the_key() {
+        create_extension_vector();
+        let backend = mock_indexes_endpoint(401);
+        point_at_mock(&backend);
+
+        let rows = doctor_rows("");
+        let (status, detail, hint) = doctor_check(&rows, "reachability");
+        assert_eq!(status, "fail", "{detail}");
+        assert!(detail.starts_with("auth:"), "{detail}");
+        assert!(hint.is_some());
+        assert_eq!(doctor_check(&rows, "credentials").0, "ok");
+    }
+
+    #[pg_test]
+    fn doctor_without_remote_makes_no_request() {
+        create_extension_vector();
+        let backend = mock_indexes_endpoint(500);
+        point_at_mock(&backend);
+
+        let rows = doctor_rows("remote => false");
+        let (status, detail, _) = doctor_check(&rows, "reachability");
+        assert_eq!(status, "ok");
+        assert_eq!(detail, "skipped (remote => false)");
+        assert_eq!(rows.len(), 9);
+    }
+
+    #[pg_test]
+    fn doctor_warns_instead_of_failing_without_a_key() {
+        create_extension_vector();
+        Spi::run("SET pinecone.api_key = ''").expect("clear the session key");
+        Spi::run("DELETE FROM pinecone.secret").expect("clear the stored key");
+
+        let rows = doctor_rows("");
+        assert_eq!(doctor_check(&rows, "credentials").0, "warn");
+        assert_eq!(doctor_check(&rows, "reachability").0, "warn");
+    }
+
+    #[pg_test]
+    fn doctor_fails_a_stored_cleartext_url_without_sending_the_key() {
+        create_extension_vector();
+        Spi::run("SET pinecone.api_key = ''").expect("clear the session key");
+        // Written directly: a stored URL that predates the https rule.
+        Spi::run(
+            "INSERT INTO pinecone.secret VALUES (true, 'k', 'http://pinecone.example') \
+             ON CONFLICT (id) DO UPDATE SET api_key = 'k', control_plane_url = 'http://pinecone.example'",
+        )
+        .expect("store a cleartext URL");
+
+        let rows = doctor_rows("");
+        let (status, detail, hint) = doctor_check(&rows, "control_plane_url");
+        assert_eq!(status, "fail", "{detail}");
+        assert!(hint.expect("hint").contains("pinecone.set_api_key"));
+        let (status, detail, _) = doctor_check(&rows, "reachability");
+        assert_eq!(status, "warn");
+        assert!(detail.starts_with("not checked"), "{detail}");
+    }
+
+    #[pg_test]
+    fn doctor_runs_for_a_role_that_cannot_read_the_stored_key() {
+        create_extension_vector();
+        Spi::run("SELECT pinecone.set_api_key('stored-key-xyz', 'https://stored-host.example')")
+            .expect("set_api_key");
+        let role = format!("pinecone_doctor_role_{}", std::process::id());
+        Spi::run(&format!("CREATE ROLE {role}")).expect("create role");
+        Spi::run(&format!("GRANT USAGE ON SCHEMA pinecone TO {role}")).expect("grant usage");
+
+        Spi::run(&format!("SET ROLE {role}")).expect("SET ROLE");
+        Spi::run("SET pinecone.api_key = ''").expect("clear the session key");
+        let rows = doctor_rows("");
+        Spi::run("RESET ROLE").expect("RESET ROLE");
+        Spi::run(&format!("DROP OWNED BY {role}")).expect("drop owned by role");
+        Spi::run(&format!("DROP ROLE {role}")).expect("drop role");
+
+        assert_eq!(doctor_check(&rows, "credentials").0, "warn");
+        assert_eq!(doctor_check(&rows, "reachability").0, "warn");
+        assert_eq!(doctor_check(&rows, "outbox").0, "ok");
+        assert!(
+            rows.iter().all(|row| {
+                let text = format!("{} {}", row.2, row.3.as_deref().unwrap_or(""));
+                !text.contains("stored-key-xyz") && !text.contains("stored-host")
+            }),
+            "{rows:?}"
         );
     }
 

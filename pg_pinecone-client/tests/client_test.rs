@@ -474,6 +474,44 @@ async fn control_plane_404_maps_to_index_not_found() {
 }
 
 #[tokio::test]
+async fn probe_tells_a_good_key_a_bad_key_and_a_plan_refusal_apart() {
+    let cp = MockServer::start().await;
+    for (key, status, body) in [
+        ("good", 200, "{}"),
+        ("bad", 401, ""),
+        ("plan", 403, "upgrade"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/indexes"))
+            .and(header("Api-Key", key))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(&cp)
+            .await;
+    }
+    let uri = cp.uri();
+    let probe = move |key: &'static str| {
+        let client = Client::new(config(uri.clone(), key));
+        tokio::task::spawn_blocking(move || client.probe())
+    };
+
+    assert!(probe("good").await.expect("join").is_ok());
+    assert!(matches!(
+        probe("bad").await.expect("join"),
+        Err(Error::Auth)
+    ));
+    match probe("plan").await.expect("join") {
+        Err(Error::Api { status, message }) => {
+            assert_eq!((status, message.as_str()), (403, "upgrade"))
+        }
+        other => panic!("expected a 403 Api error, got {other:?}"),
+    }
+    assert!(matches!(
+        Client::new(config(cp.uri(), "")).probe(),
+        Err(Error::MissingApiKey)
+    ));
+}
+
+#[tokio::test]
 async fn control_plane_401_maps_to_auth_error() {
     let cp = MockServer::start().await;
     Mock::given(method("GET"))

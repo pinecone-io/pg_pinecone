@@ -20,6 +20,17 @@ normally), `backoff` (queued, retrying a transient failure — Pinecone outage, 
 bundle). The document lane of a `track_docs` table reports the same states in `docs_queue_state`;
 alert on both.
 
+`pinecone.doctor()` is the same walk in one call, for a new install or a broken one: one row per check
+(version of library and catalog, `shared_preload_libraries`, pgvector, credentials, control-plane URL, one
+authenticated request to Pinecone, the worker, the outbox, failed partitions), each `ok`, `warn` or `fail`
+with a `hint`. Run it first; `doctor(remote => false)` skips the request to Pinecone on a host that cannot
+reach it. A `fail` on `reachability` starts with `network:`, `auth:` or `plan or permission:`, which are three
+different fixes.
+
+```sql
+SELECT check_name, status, detail, hint FROM pinecone.doctor() WHERE status <> 'ok';
+```
+
 ## Parked queue
 
 **Symptom**: `queue_state = 'parked'`. **Diagnose**: `last_error` (from `pinecone.status()`) is the

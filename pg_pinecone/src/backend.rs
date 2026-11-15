@@ -44,7 +44,7 @@ pub(crate) fn client_for_effective_key() -> Arc<Client> {
 
 /// Shared cache lookup behind [`client_for_effective_key`]: builds (or reuses)
 /// the `Client` for `api_key`/`control_plane_url` plus the current `timeout` GUC.
-fn client_for(api_key: String, control_plane_url: String) -> Arc<Client> {
+pub(crate) fn client_for(api_key: String, control_plane_url: String) -> Arc<Client> {
     let timeout = Duration::from_millis(TIMEOUT_MS.get() as u64);
     let user_agent = user_agent_header();
 
@@ -260,7 +260,7 @@ fn no_effective_api_key_error() -> ! {
     error!(
         "pg_pinecone: no API key available — either SET pinecone.api_key = '<your key>' for this \
          session, or have an owner/superuser run pinecone.set_api_key('<your key>') and \
-         GRANT SELECT ON pinecone.secret TO <your role>"
+         GRANT SELECT ON pinecone.secret TO <your role> (pinecone.doctor() checks the setup)"
     )
 }
 
@@ -627,7 +627,8 @@ pub(crate) fn raise(err: ClientError) -> ! {
         ClientError::MissingApiKey => error!(
             "pg_pinecone: pinecone.api_key is not set — run: SET pinecone.api_key = '<your key>' \
              (this session), or ALTER ROLE <role> SET pinecone.api_key = '<your key>' \
-             (persistent, but readable by all users via pg_db_role_setting)"
+             (persistent, but readable by all users via pg_db_role_setting); \
+             pinecone.doctor() checks the setup"
         ),
         ClientError::IndexNotFound { index } => error!(
             "pg_pinecone: index '{index}' not found — check the index name and that pinecone.api_key \
@@ -643,7 +644,7 @@ pub(crate) fn raise(err: ClientError) -> ! {
         ),
         ClientError::Auth => error!(
             "pg_pinecone: authentication failed — check that pinecone.api_key is valid and has access \
-             to this project"
+             to this project; pinecone.doctor() tells a bad key from a plan refusal or a network failure"
         ),
         ClientError::BadRequest { message } => raise_text(
             format!("pg_pinecone: Pinecone rejected the request: {message}"),
@@ -658,11 +659,11 @@ pub(crate) fn raise(err: ClientError) -> ! {
         ),
         ClientError::Timeout { ms } => error!(
             "pg_pinecone: request timed out after {ms}ms — raise pinecone.timeout_ms if the index is \
-             slow to respond"
+             slow to respond, or run pinecone.doctor()"
         ),
         ClientError::Transport { url, reason } => error!(
             "pg_pinecone: could not reach {url}: {reason} — check pinecone.control_plane_url and \
-             network connectivity"
+             network connectivity (pinecone.doctor() checks both)"
         ),
         ClientError::Api { status, message } => raise_text(
             format!("pg_pinecone: Pinecone returned unexpected status {status}: {message}"),

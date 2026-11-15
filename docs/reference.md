@@ -430,6 +430,7 @@ isn't data, and a restored database may lag the remote index until `pinecone.syn
 | `pinecone.topk` | pgvector operators | Pinecone `/query` | errors, names `DROP INDEX` — query with `ORDER BY` instead | only remote (stored key or session GUC) |
 | `pinecone.flush` / `outbox_retry` / `outbox_discard` | n/a | yes (`sync` tables are no-ops) | yes — same outbox, keyed by table | no |
 | `pinecone.status` | yes | yes | yes | no — registry-only, never fails |
+| `pinecone.doctor` | yes | yes | yes | only for the Pinecone check (`remote => false` skips it) |
 | `pinecone.worker_version` | n/a (no table involved) | n/a | n/a | no — any role; `(compiled, installed, idle)` of the worker version guard, see [Limits](#limits) |
 | `pinecone.last_scan_mode` / `last_scan_stats` | n/a | n/a | yes — this session's last scan: native path (`flat`/`h`/`l`) and batch counters, or the remote `/query` count; `last_scan_stats` is new in 0.9 (see [Iterative scan](#iterative-scan)) | no |
 | `pinecone.index_drift` / `schedule_maintenance` / `maintenance_status` | n/a | n/a | native-engine only (errors on a remote-mode or non-`pg_pinecone` index; a native index below format 3 answers with a WARNING) | no |
@@ -1097,6 +1098,27 @@ JOIN articles a ON a.id = s.id::bigint
 ORDER BY s.rank;
 ```
 
+## `pinecone.doctor()`
+
+`pinecone.doctor(remote => true)` is the one-call install check: one row per check, `check_name`, `status`
+(`ok`, `warn` or `fail`), `detail` and a `hint` with the fix (`NULL` when `ok`).
+
+| `check_name` | Looks at | Not `ok` when |
+|---|---|---|
+| `version` | the loaded library against `pg_extension.extversion` | `warn`: they differ (the restart came without `ALTER EXTENSION UPDATE`), or the catalog version is unreadable |
+| `shared_preload_libraries` | whether it names `pg_pinecone` | `warn`: it does not, or the role may not read the setting |
+| `pgvector` | `CREATE EXTENSION vector` in this database | `fail`: not installed |
+| `credentials` | which key this session uses: the `pinecone.api_key` setting, else the stored one. Never the key | `warn`: none, or one is stored but the role cannot read `pinecone.secret` |
+| `control_plane_url` | the URL that key goes to (a stored key goes to its stored URL) | `fail`: not `https://` and not `http://` to loopback (a stored one: re-run `pinecone.set_api_key` with an `https://` URL); `warn`: `http://` to loopback. Userinfo is shown as `***` |
+| `reachability` | one `GET /indexes` with that key, timed by `pinecone.timeout_ms` | `fail`: the detail starts `network:` (no answer), `auth:` (401) or `plan or permission:` (403); `warn`: `limit:` (429) or not checked (no usable key, or a URL that fails `control_plane_url`: the key is not sent) |
+| `outbox` | queued writes of both lanes, the same counts as `status()` | `fail`: a queue is parked; `warn`: retrying with backoff, or the role sees a table but cannot run `pinecone._outbox_stats` or `pinecone._doc_outbox_stats` |
+| `failed_partitions` | partitions Pinecone refused for good | `fail`: any |
+| `worker` | the launcher | `fail`: not running with writes queued; `warn`: not running (`pinecone.worker_enabled` off, not preloaded, or down) |
+
+`remote => false` makes no request: `reachability` reports `ok` with `skipped`. The function runs as the caller
+and does not raise for what a role cannot see: that is a `warn`. It is new in 0.13.0, so it does not exist
+until `ALTER EXTENSION pg_pinecone UPDATE` has run.
+
 ## `pinecone.status()` columns
 
 | Column | Meaning |
@@ -1143,13 +1165,13 @@ retries after growing delays), `NO WORKER` (queued, and no launcher runs in the 
 
 | Message starts with | Cause | Fix |
 |---|---|---|
-| `pg_pinecone: no API key available` | No key on the session GUC and none stored. | `SET pinecone.api_key = '...'`, or have an owner run `pinecone.set_api_key(...)` and `GRANT SELECT ON pinecone.secret`. |
+| `pg_pinecone: no API key available` | No key on the session GUC and none stored. | `SET pinecone.api_key = '...'`, or have an owner run `pinecone.set_api_key(...)` and `GRANT SELECT ON pinecone.secret`. `pinecone.doctor()` shows which credential applies. |
 | `pg_pinecone: index '...' not found` | Index name is wrong, or the key belongs to a different project. | Check the index name and project. |
 | `pg_pinecone: index '...' already exists` | `create_doc_index` hit an index name already in use. (`promote`/`CREATE INDEX ... USING pinecone` adopt an existing index of the same name instead of erroring.) | Pick a different name, or drop the existing index. |
-| `pg_pinecone: authentication failed` | The API key is invalid or lacks access. | Verify the key in the Pinecone console. |
+| `pg_pinecone: authentication failed` | The API key is invalid or lacks access. | Verify the key in the Pinecone console; `pinecone.doctor()` tells a refused key from a plan refusal. |
 | `pg_pinecone: Pinecone rejected the request: ...` | The request was malformed (e.g. dimension mismatch, bad doc-index schema). | Check the message; fix the offending argument. |
-| `pg_pinecone: request timed out after ...ms` | The control or data plane didn't respond in time. | Raise `pinecone.timeout_ms`. |
-| `pg_pinecone: could not reach ...` | Network problem, or a bad `pinecone.control_plane_url`. | Check connectivity and the GUC value. |
+| `pg_pinecone: request timed out after ...ms` | The control or data plane didn't respond in time. | Raise `pinecone.timeout_ms`. `pinecone.doctor()` times one request. |
+| `pg_pinecone: could not reach ...` | Network problem, or a bad `pinecone.control_plane_url`. | Check connectivity and the GUC value; `pinecone.doctor()` reports it as `network:`. |
 | `refusing to send the API key over an insecure connection` | A control-plane URL (GUC or stored) or a returned index host is `http://` and not loopback. | Use `https://`. A stored URL: re-run `pinecone.set_api_key(key, url)`. |
 | `pg_pinecone: Pinecone returned unexpected status ...` | An unhandled API response. | Check the Pinecone status page; retry. |
 | `pg_pinecone: Pinecone returned unexpected status 429: ...` (an index scan, `pinecone.topk`) | A read hit a Pinecone limit: the rate limit of the namespace, or the plan's monthly read units (the message says which). Reads are not retried (only writes are: 429 and 5xx, three attempts), so the statement fails at once. | Retry with backoff in the application, or spread the load over namespaces with a [partition column](#partition-column-on-a-vector-table); see [Limits](#limits). |
