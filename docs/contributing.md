@@ -151,3 +151,20 @@ from any proprietary or third-party implementation". When you add such a module:
   third party is needed, review its licence first and attribute it in the file and in `LICENSE`'s notices.
 - Test the math against an independent evaluation (the f64 oracle in `local/testkit.rs` is written from the
   formulas, with no code shared with the implementation), not against the implementation's own output.
+
+## Postgres.app package
+
+Each `v*` release builds `pg_pinecone-pg18-<version>.pkg` (PostgreSQL 18, Apple silicon), signs and
+notarizes it as Pinecone Systems Inc, and attaches it to the release. The signing secrets live in the
+`postgresapp-signing` environment; without them the job skips with a warning and the release ships
+without the package.
+
+- **Release day:** the run pauses at `sign (postgres.app pg18 arm64)` until a required reviewer
+  approves it, and the release stays a draft until then.
+- **Postgres.app listing:** [postgresapp.com/extensions](https://postgresapp.com/extensions/) reads
+  `docs/_data/extensions/18/pg_pinecone.json` in PostgresApp/PostgresApp. To point it at a new
+  release, open a PR there bumping `version` and `download_url`. Its maintainer merges these by hand,
+  so bump it occasionally, not on every release.
+- **Renewal:** the Developer ID certificates expire in December 2027. The Apple Account Holder issues
+  new ones, each from its own certificate signing request; rebuild the two `.p12` files and update
+  the `APPLE_DEVELOPER_ID_*_CERT` and `APPLE_CERT_PASSWORD` secrets.
