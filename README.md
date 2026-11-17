@@ -49,8 +49,9 @@ Install it one of four ways:
   [releases page](https://github.com/pinecone-io/pg_pinecone/releases), open it, and restart the
   server.
 - **Docker**: [`pineconeteam/pg_pinecone`](https://hub.docker.com/r/pineconeteam/pg_pinecone) is the
-  [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector) image with `pg_pinecone` added,
-  one tag per Postgres major: `docker run -d -e POSTGRES_PASSWORD=secret pineconeteam/pg_pinecone:0.11.0-pg17`
+  [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector) image with `pg_pinecone` added.
+  `pg17`, `pg18`, and `latest` track the current release (`latest` is Postgres 18):
+  `docker run -d -e POSTGRES_PASSWORD=secret pineconeteam/pg_pinecone:pg17`
   (add `-c shared_preload_libraries=pg_pinecone` for the `remote` engine).
 - **PGXN**: with Rust, cargo-pgrx 0.19.2, and the [PGXN client](https://pgxn.github.io/pgxnclient/),
   `pgxn install pg_pinecone` builds the [PGXN release](https://pgxn.org/dist/pg_pinecone/) for the
